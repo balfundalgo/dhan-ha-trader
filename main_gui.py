@@ -137,7 +137,7 @@ class TokenTab(ctk.CTkFrame):
 
         ctk.CTkFrame(form, fg_color="transparent", height=10).pack()
         self.e_client = _row("Client ID")
-        self.e_pin    = _row("PIN  (4-digit)", show="●")
+        self.e_pin    = _row("PIN  (6-digit)", show="●")
         self.e_totp   = _row("TOTP Secret",    show="●")
         self.e_token  = _row("Access Token")
         ctk.CTkFrame(form, fg_color="transparent", height=10).pack()

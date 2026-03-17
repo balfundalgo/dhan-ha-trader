@@ -35,12 +35,15 @@ else:
 ENV_FILE = _BASE / ".env"
 
 # ── Shared token file (written by dhan-token-generator EXE) ──────────────────
-# Windows: C:\balfund_shared\dhan_token.json
-# Mac/Linux (dev): ~/balfund_shared/dhan_token.json
+# Windows: C:\balfund_shared\dhan_token.json  (auto-created)
+# Mac/Linux (dev): ~/balfund_shared/dhan_token.json  (auto-created)
 if platform.system() == "Windows":
     SHARED_TOKEN_FILE = Path("C:/balfund_shared/dhan_token.json")
 else:
     SHARED_TOKEN_FILE = Path.home() / "balfund_shared" / "dhan_token.json"
+
+# Auto-create the shared folder on any PC — no manual setup needed
+SHARED_TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 
 def read_shared_token() -> dict:
