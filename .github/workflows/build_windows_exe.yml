@@ -1,0 +1,38 @@
+name: Build Windows EXE
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install customtkinter requests pandas websocket-client python-dotenv pyotp schedule pyinstaller
+      - name: Build EXE
+        run: |
+          pyinstaller --onefile --windowed `
+            --name "DhanHATrader" `
+            --hidden-import=customtkinter `
+            --hidden-import=websocket `
+            --hidden-import=websocket._abnf `
+            --hidden-import=websocket._core `
+            --hidden-import=pyotp `
+            --hidden-import=pandas `
+            --hidden-import=dotenv `
+            --collect-all customtkinter `
+            main_gui.py
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DhanHATrader-Windows
+          path: dist/DhanHATrader.exe
+          retention-days: 30
