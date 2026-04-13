@@ -253,22 +253,42 @@ class TradingApp:
         if not path.exists():
             with path.open("w", newline="", encoding="utf-8") as f:
                 csv.writer(f).writerow([
-                    "ts","symbol","event_type","mode","order_type","position_side",
-                    "entry_price","entry_ts","exit_price","closed_entry_price",
-                    "closed_pnl","realized_pnl","trade_count","lot_size"])
+                    "ts", "symbol", "event_type", "mode", "order_type",
+                    "position_side", "entry_price", "entry_time",
+                    "exit_price", "exit_time",
+                    "closed_entry_price", "closed_pnl",
+                    "realized_pnl", "trade_count", "lot_size"])
         return path
 
     def _append_trade_log(self, payload):
+        import datetime as _dt
+        def _fmt(epoch):
+            if epoch is None:
+                return ""
+            try:
+                return _dt.datetime.fromtimestamp(int(epoch)).strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                return str(epoch)
+
         path = self._get_todays_trade_log()
         with path.open("a", newline="", encoding="utf-8") as f:
             csv.writer(f).writerow([
-                payload.get("ts"), payload.get("symbol"), payload.get("event_type"),
-                "LIVE" if self.live_mode else "PAPER", self.order_type,
-                payload.get("position_side"), payload.get("entry_price"),
-                payload.get("entry_ts"), payload.get("exit_price"),
-                payload.get("closed_entry_price"), payload.get("closed_pnl"),
-                payload.get("realized_pnl"), payload.get("trade_count"),
-                payload.get("lot_size")])
+                _fmt(payload.get("ts")),        # event timestamp (human readable)
+                payload.get("symbol"),
+                payload.get("event_type"),
+                "LIVE" if self.live_mode else "PAPER",
+                self.order_type,
+                payload.get("position_side"),
+                payload.get("entry_price"),
+                _fmt(payload.get("entry_ts")),  # entry time (human readable)
+                payload.get("exit_price"),
+                _fmt(payload.get("ts")),        # exit time = event time for close events
+                payload.get("closed_entry_price"),
+                payload.get("closed_pnl"),
+                payload.get("realized_pnl"),
+                payload.get("trade_count"),
+                payload.get("lot_size"),
+            ])
 
     def _on_trade_event(self, event_type, payload):
         payload["event_type"] = event_type
