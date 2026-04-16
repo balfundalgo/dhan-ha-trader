@@ -114,14 +114,14 @@ class HAStaticTriggerStrategy:
         self.kc_multiplier = float(kc_multiplier)
         self.buffer = float(buffer_override) if buffer_override is not None else float(BUFFER_MAP.get(self.name, 1.0))
 
-        # Session start in seconds from midnight UTC, used for bucket alignment.
-        # MCX_COMM starts at 09:00 IST = 03:30 UTC = 12600s from midnight UTC
-        # NSE/BSE/IDX start at 09:15 IST = 03:45 UTC = 13500s from midnight UTC
+        # Session start in UTC seconds from day midnight for bucket alignment.
+        # MCX_COMM: 09:00 IST = 03:30 UTC = 12600s
+        # NSE/BSE:  09:15 IST = 03:45 UTC = 13500s
         exch = str(exchange).strip().upper()
         if exch == "MCX_COMM":
-            self._session_start_utc_secs = 9 * 3600 - 19800       # 09:00 IST → 03:30 UTC
+            self._session_start_utc_secs = 9 * 3600 - 19800        # 09:00 IST
         else:
-            self._session_start_utc_secs = 9 * 3600 + 15 * 60 - 19800  # 09:15 IST → 03:45 UTC
+            self._session_start_utc_secs = 9 * 3600 + 15 * 60 - 19800  # 09:15 IST
 
         self.agg_current: Optional[Dict[str, Any]] = None
         self.agg_completed = deque(maxlen=500)
@@ -143,24 +143,20 @@ class HAStaticTriggerStrategy:
     def on_new_1m_candle(self, row_1m: Dict[str, Any]) -> bool:
         ts = int(row_1m["bucket"])
 
-        # ── Session-anchor aligned bucket ────────────────────────────────────
-        # Uses exchange session start as anchor so candles match broker chart:
-        #   MCX_COMM  → 09:00 IST anchor → 09:00, 09:45, 10:30... for 45m
-        #   NSE/BSE   → 09:15 IST anchor → 09:15, 10:00, 10:45... for 45m
+        # Session-anchor aligned bucket — matches exchange boundaries exactly.
+        # MCX 45m: 09:00, 09:45, 10:30...  NSE 45m: 09:15, 10:00, 10:45...
         if self.strategy_tf <= 1:
             sb = ts - (ts % 60)
         else:
             tf_sec    = self.strategy_tf * 60
-            day_start = (ts // 86400) * 86400          # midnight UTC of that day
+            day_start = (ts // 86400) * 86400
             anchor    = day_start + self._session_start_utc_secs
             elapsed   = ts - anchor
             if elapsed < 0:
-                # Before session start (prev-day data in backfill) — plain floor
-                sb = (ts // tf_sec) * tf_sec
+                sb = (ts // tf_sec) * tf_sec   # pre-session fallback
             else:
                 sb = anchor + (elapsed // tf_sec) * tf_sec
 
-        # ── Session gap detection (cross-day carry logic only) ────────────────
         is_new_session = False
         if self.last_1m_bucket is None:
             is_new_session = True

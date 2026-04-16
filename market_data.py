@@ -226,7 +226,7 @@ class CandleEngine:
             self.last_ltt_epoch = bucket + 59
 
     def on_tick(self, ltp: float, ltt_epoch: int) -> None:
-        """Update LTP only. Candle OHLC is handled by RestCandlePoller via REST API."""
+        """Update LTP only. Candle OHLC handled by RestCandlePoller via REST API."""
         ltp = float(ltp)
         ltt_epoch = normalize_dhan_epoch(int(ltt_epoch))
         with self.lock:
@@ -358,18 +358,12 @@ def build_instrument_list(symbol_filter: Optional[List[str]] = None, logger=None
 
 
 def _instrument_for_segment(exchange_segment: str) -> str:
-    """Map exchange segment to Dhan instrument type string for history API."""
     seg = str(exchange_segment).strip().upper()
-    if seg == "IDX_I":
-        return "INDEX"
-    if seg in ("NSE_EQ", "BSE_EQ"):
-        return "EQUITY"
-    if seg in ("NSE_FNO", "BSE_FNO"):
-        return "OPTIDX"
-    if seg in ("NSE_CURRENCY", "BSE_CURRENCY"):
-        return "CURRENCY"
-    if seg == "MCX_COMM":
-        return "FUTCOM"
+    if seg == "IDX_I":        return "INDEX"
+    if seg in ("NSE_EQ", "BSE_EQ"):  return "EQUITY"
+    if seg in ("NSE_FNO", "BSE_FNO"): return "OPTIDX"
+    if seg in ("NSE_CURRENCY", "BSE_CURRENCY"): return "CURRENCY"
+    if seg == "MCX_COMM":     return "FUTCOM"
     return "EQUITY"
 
 
@@ -378,10 +372,8 @@ def fetch_intraday_1m_history(access_token: str, inst: Dict[str, Any], days: int
     days = max(1, min(int(days), 30))
     end_dt   = datetime.now().replace(second=0, microsecond=0)
     start_dt = end_dt - timedelta(days=days)
-
     exchange_segment = str(inst["exchange"])
     instrument_type  = _instrument_for_segment(exchange_segment)
-
     payload = {
         "securityId":      str(inst["security_id"]),
         "exchangeSegment": exchange_segment,
@@ -391,14 +383,10 @@ def fetch_intraday_1m_history(access_token: str, inst: Dict[str, Any], days: int
         "fromDate":        start_dt.strftime("%Y-%m-%d %H:%M:%S"),
         "toDate":          end_dt.strftime("%Y-%m-%d %H:%M:%S"),
     }
-    headers = {
-        "Accept":       "application/json",
-        "Content-Type": "application/json",
-        "access-token": access_token,
-    }
+    headers = {"Accept": "application/json", "Content-Type": "application/json",
+               "access-token": access_token}
     if client_id:
         headers["client-id"] = str(client_id)
-
     try:
         r = requests.post(HIST_INTRADAY_URL, headers=headers, json=payload, timeout=30)
         if not r.ok:
@@ -408,18 +396,16 @@ def fetch_intraday_1m_history(access_token: str, inst: Dict[str, Any], days: int
             return []
         data = r.json()
         ts  = data.get("timestamp", []) or []
-        op  = data.get("open",      []) or []
-        hi  = data.get("high",      []) or []
-        lo  = data.get("low",       []) or []
-        cl  = data.get("close",     []) or []
-        vol = data.get("volume",    []) or []
+        op  = data.get("open",  []) or []
+        hi  = data.get("high",  []) or []
+        lo  = data.get("low",   []) or []
+        cl  = data.get("close", []) or []
+        vol = data.get("volume",[]) or []
         n   = min(len(ts), len(op), len(hi), len(lo), len(cl))
         rows = []
         for i in range(n):
-            # Use raw REST timestamp directly — do NOT call normalize_dhan_epoch()
-            # or minute_bucket_epoch() here. REST timestamps are already correct
-            # UTC epochs. normalize_dhan_epoch() is only for WebSocket ticker packets
-            # which sometimes send IST epoch instead of UTC.
+            # Use raw REST timestamp — do NOT call normalize_dhan_epoch here.
+            # REST timestamps are already correct UTC epochs.
             bucket = int(ts[i])
             rows.append({
                 "bucket":     bucket,
@@ -430,17 +416,13 @@ def fetch_intraday_1m_history(access_token: str, inst: Dict[str, Any], days: int
                 "tick_count": int(vol[i]) if i < len(vol) and vol[i] is not None else 1,
             })
         rows.sort(key=lambda x: x["bucket"])
-
-        # Drop the current running (incomplete) 1m candle — only keep closed bars.
-        # current_minute_bucket is in UTC just like REST timestamps.
+        # Drop current incomplete candle — only keep closed bars
         if rows:
             current_minute_bucket = (int(time.time()) // 60) * 60
             if int(rows[-1]["bucket"]) >= current_minute_bucket:
                 rows = rows[:-1]
-
         if logger:
-            logger.info("Backfill loaded for %s: %d x 1m closed candles "
-                        "(seg=%s instr=%s)",
+            logger.info("Backfill loaded for %s: %d x 1m closed candles (seg=%s instr=%s)",
                         inst["name"], len(rows), exchange_segment, instrument_type)
         return rows
     except Exception as e:
@@ -476,21 +458,21 @@ def parse_prev_close(payload: bytes) -> Optional[Dict[str, Any]]:
 
 class RestCandlePoller:
     """
-    Polls Dhan REST API once per minute, timed to fire ~3 seconds after
-    each minute boundary (HH:MM:03). Guarantees the just-closed candle is
-    available on every poll. Fires on_new_1m_candle_cb for each new bucket.
-    WebSocket handles LTP only.
+    Polls REST API once per minute, timed to fire 3s after each minute boundary.
+    Includes stale candle guard — skips candles that are too old (late API delivery).
     """
     POLL_DELAY_AFTER_MINUTE = 3
     LOOKBACK_DAYS_LIVE      = 1
 
     def __init__(self, client_id, access_token, instruments,
-                 candle_engines, on_new_1m_candle_cb, logger=None):
+                 candle_engines, on_new_1m_candle_cb,
+                 strategy_tf_sec: int = 60, logger=None):
         self.client_id    = client_id
         self.access_token = access_token
         self.instruments  = instruments
         self.engines      = candle_engines
         self.on_new_1m_candle_cb = on_new_1m_candle_cb
+        self._tf_sec      = int(strategy_tf_sec)   # used for stale candle guard
         self.logger       = logger
         self.stop_event   = threading.Event()
         self._thread      = None
@@ -502,36 +484,53 @@ class RestCandlePoller:
         return remaining + self.POLL_DELAY_AFTER_MINUTE
 
     def _poll_once(self):
+        now = int(time.time())
+        # Max allowed lag: 2 full TF periods. Anything older is a late API candle.
+        max_lag_sec = max(self._tf_sec * 2, 180)
+
         for inst in self.instruments:
             if self.stop_event.is_set():
                 return
             sec = str(inst["security_id"])
             try:
                 rows = fetch_intraday_1m_history(
-                    access_token=self.access_token,
-                    inst=inst,
-                    days=self.LOOKBACK_DAYS_LIVE,
-                    logger=self.logger,
-                    client_id=self.client_id,
-                )
+                    access_token=self.access_token, inst=inst,
+                    days=self.LOOKBACK_DAYS_LIVE, logger=self.logger,
+                    client_id=self.client_id)
                 if not rows:
                     continue
-                prev_bucket  = self._last_seen_bucket.get(sec, 0)
-                new_candles  = [r for r in rows if int(r["bucket"]) > prev_bucket]
+
+                prev_bucket = self._last_seen_bucket.get(sec, 0)
+                new_candles = [r for r in rows if int(r["bucket"]) > prev_bucket]
+
+                # Stale candle guard — drop candles that arrived too late.
+                # e.g. MCX lunch break candles delivered hours later.
+                fresh = [r for r in new_candles
+                         if (now - int(r["bucket"])) <= max_lag_sec]
+                stale = [r for r in new_candles
+                         if (now - int(r["bucket"])) > max_lag_sec]
+                if stale and self.logger:
+                    for r in stale:
+                        self.logger.warning(
+                            "STALE candle skipped: %s bucket=%s lag=%ds",
+                            inst["name"], r["bucket"], now - int(r["bucket"]))
+
                 if new_candles:
+                    # Always update last seen to avoid re-processing
+                    self._last_seen_bucket[sec] = int(rows[-1]["bucket"])
+
+                for candle in fresh:
                     engine = self.engines.get(sec)
                     if engine:
-                        for r in new_candles:
-                            engine.seed_from_1m_candle(r)
-                    self._last_seen_bucket[sec] = int(rows[-1]["bucket"])
-                    for candle in new_candles:
-                        if self.logger:
-                            self.logger.info(
-                                "REST 1m: %s bucket=%s O=%.4f H=%.4f L=%.4f C=%.4f",
-                                inst["name"], candle["bucket"],
-                                candle["open"], candle["high"],
-                                candle["low"], candle["close"])
-                        self.on_new_1m_candle_cb(sec, candle)
+                        engine.seed_from_1m_candle(candle)
+                    if self.logger:
+                        self.logger.info(
+                            "REST 1m: %s bucket=%s O=%.4f H=%.4f L=%.4f C=%.4f",
+                            inst["name"], candle["bucket"],
+                            candle["open"], candle["high"],
+                            candle["low"], candle["close"])
+                    self.on_new_1m_candle_cb(sec, candle)
+
             except Exception as e:
                 if self.logger:
                     self.logger.warning("RestCandlePoller error %s: %s", inst["name"], e)
@@ -567,14 +566,12 @@ class RestCandlePoller:
 
 
 class MarketDataEngine:
-    """
-    Hybrid engine:
-      WebSocket → LTP only (real-time trigger hits)
-      REST poll → accurate 1m OHLC every minute (candle strategy)
-    """
+    """Hybrid: WebSocket → LTP only | REST poll → accurate 1m OHLC every minute."""
+
     def __init__(self, client_id: str, access_token: str,
                  instruments: List[Dict[str, Any]],
-                 on_new_1m_candle, on_ltp, logger=None):
+                 on_new_1m_candle, on_ltp,
+                 strategy_tf_sec: int = 60, logger=None):
         self.client_id    = client_id
         self.access_token = access_token
         self.ws_url = (
@@ -597,13 +594,10 @@ class MarketDataEngine:
                 sec, inst["name"], inst["exchange"], inst.get("display_prec", 2))
 
         self.rest_poller = RestCandlePoller(
-            client_id=client_id,
-            access_token=access_token,
-            instruments=instruments,
-            candle_engines=self.engines,
+            client_id=client_id, access_token=access_token,
+            instruments=instruments, candle_engines=self.engines,
             on_new_1m_candle_cb=on_new_1m_candle,
-            logger=logger,
-        )
+            strategy_tf_sec=strategy_tf_sec, logger=logger)
 
         self.last_ws_connect_time = None
         self.last_ws_error        = None
@@ -622,10 +616,9 @@ class MarketDataEngine:
         ws.send(json.dumps({
             "RequestCode":     REQ_SUB_TICKER,
             "InstrumentCount": len(self.instruments),
-            "InstrumentList":  [
-                {"ExchangeSegment": i["exchange"], "SecurityId": str(i["security_id"])}
-                for i in self.instruments
-            ],
+            "InstrumentList":  [{"ExchangeSegment": i["exchange"],
+                                  "SecurityId": str(i["security_id"])}
+                                 for i in self.instruments],
         }))
 
     def on_message(self, ws, message):
@@ -650,7 +643,7 @@ class MarketDataEngine:
             if self._last_ticker_key.get(sec) == dedup:
                 return
             self._last_ticker_key[sec] = dedup
-            engine.on_tick(ltp, ltt_epoch)   # LTP only — no candle building
+            engine.on_tick(ltp, ltt_epoch)   # LTP only
             self.on_ltp_cb(sec, ltp, ltt_epoch)
             with self.lock:
                 self.packet_counts[RESP_TICKER] += 1
@@ -684,10 +677,8 @@ class MarketDataEngine:
         while not self.stop_event.is_set():
             try:
                 self.ws = websocket.WebSocketApp(
-                    self.ws_url,
-                    on_open=self.on_open, on_message=self.on_message,
-                    on_error=self.on_error, on_close=self.on_close,
-                )
+                    self.ws_url, on_open=self.on_open, on_message=self.on_message,
+                    on_error=self.on_error, on_close=self.on_close)
                 self.ws.run_forever(ping_interval=20, ping_timeout=10)
             except Exception as e:
                 with self.lock:

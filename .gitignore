@@ -2,6 +2,8 @@
 paper_state.json
 paper_runtime.log
 trade_log.csv
+logs/
+trades/
 __pycache__/
 *.pyc
 .DS_Store

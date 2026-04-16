@@ -57,9 +57,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("DhanTokenManager")
 
-# ─────────────────────────────────────────────────────────────
-#  PyInstaller-safe base path
-# ─────────────────────────────────────────────────────────────
+# PyInstaller-safe base path
 if getattr(sys, 'frozen', False):
     _BASE = Path(sys.executable).parent
 else:
@@ -67,10 +65,7 @@ else:
 
 ENV_FILE = _BASE / ".env"
 
-# ─────────────────────────────────────────────────────────────
-#  Shared token file — written by dhan-token-generator EXE
-#  All strategies read from here instead of generating their own
-# ─────────────────────────────────────────────────────────────
+# Shared token file written by dhan-token-generator EXE
 if platform.system() == "Windows":
     SHARED_TOKEN_FILE = Path("C:/balfund_shared/dhan_token.json")
 else:
@@ -78,25 +73,26 @@ else:
 
 
 def read_shared_token() -> dict:
-    """
-    Read token from the shared JSON file written by dhan-token-generator.
-    Returns dict with 'client_id' and 'access_token', or empty dict if not found.
-    """
+    """Read token from dhan-token-generator shared file."""
     if not SHARED_TOKEN_FILE.exists():
         return {}
     try:
         data = json.loads(SHARED_TOKEN_FILE.read_text(encoding="utf-8"))
-        client_id    = str(data.get("client_id", "")).strip()
-        access_token = str(data.get("access_token", "")).strip()
-        if client_id and access_token:
-            return {"client_id": client_id, "access_token": access_token}
+        cid = str(data.get("client_id", "")).strip()
+        tok = str(data.get("access_token", "")).strip()
+        if cid and tok:
+            return {"client_id": cid, "access_token": tok}
     except Exception as e:
         log.warning("Could not read shared token file: %s", e)
     return {}
 
 
+# ─────────────────────────────────────────────────────────────
+#  CONFIG — loads from .env file
+# ─────────────────────────────────────────────────────────────
+
 def load_config() -> dict:
-    """Re-reads .env with override=True. Shared token from dhan-token-generator takes priority."""
+    """Re-reads .env with override=True. Shared token takes priority."""
     load_dotenv(ENV_FILE, override=True)
     config = {
         "client_id":    os.getenv("DHAN_CLIENT_ID", "").strip(),
