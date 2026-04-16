@@ -180,9 +180,19 @@ class HAStaticTriggerStrategy:
         cur_bucket = int(self.agg_current["bucket"])
 
         if is_new_session and ts != cur_bucket:
+            # Push yesterday's incomplete forming candle into agg_completed
+            # so it becomes the "carry" candle for cross-day HH/LL check.
             finalized = dict(self.agg_current)
             self.agg_completed.append(finalized)
-            self._rebuild_and_update_pending()
+
+            if self.variation == "two_consecutive":
+                # Do NOT arm a trigger yet. We need today's first candle to
+                # close before checking HH/LL. Clear any stale pending and wait.
+                self._cancel_pending("New session: waiting for today's first candle (two_consecutive)")
+            else:
+                # For other variations: run normal rebuild (ha_static etc.)
+                self._rebuild_and_update_pending()
+
             self.agg_current = {
                 "bucket": sb,
                 "open": float(row_1m["open"]),

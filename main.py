@@ -308,12 +308,23 @@ class TradingApp:
             s.sl_side = None; s.sl_price = None; s.sl_from_bucket = None
             p = self.paper[sec]
             p.position_side = None; p.entry_price = None; p.entry_ts = None
-            s._rebuild_and_update_pending()
-            if s.pending_side:
-                self.logger.info("Startup: %s pending %s @ %.4f",
-                    self.sec_to_inst[sec]["name"], s.pending_side, s.pending_trigger or 0)
+
+            if s.variation == "two_consecutive":
+                # Do NOT arm pending from backfill history for two_consecutive.
+                # We need today's first live candle to close and pair with
+                # yesterday's last candle before checking HH/LL.
+                s.pending_side    = None
+                s.pending_trigger = None
+                s.pending_from_bucket = None
+                s.last_event = "Startup: waiting for today's first candle to close..."
             else:
-                s.last_event = "Startup: watching..."
+                # For other variations: re-arm pending from last completed candles
+                s._rebuild_and_update_pending()
+                if s.pending_side:
+                    self.logger.info("Startup: %s pending %s @ %.4f",
+                        self.sec_to_inst[sec]["name"], s.pending_side, s.pending_trigger or 0)
+                else:
+                    s.last_event = "Startup: watching..."
 
     # ── Square off ────────────────────────────────────────────────────────────
     def _apply_startup_squareoff(self):
