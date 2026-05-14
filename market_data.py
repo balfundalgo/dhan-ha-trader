@@ -360,9 +360,9 @@ def build_instrument_list(symbol_filter: Optional[List[str]] = None, logger=None
 def _instrument_for_segment(exchange_segment: str) -> str:
     seg = str(exchange_segment).strip().upper()
     if seg == "IDX_I":        return "INDEX"
-    if seg in ("NSE_EQ", "BSE_EQ"):  return "EQUITY"
-    if seg in ("NSE_FNO", "BSE_FNO"): return "OPTIDX"
-    if seg in ("NSE_CURRENCY", "BSE_CURRENCY"): return "CURRENCY"
+    if seg in ("NSE_EQ","BSE_EQ"): return "EQUITY"
+    if seg in ("NSE_FNO","BSE_FNO"): return "OPTIDX"
+    if seg in ("NSE_CURRENCY","BSE_CURRENCY"): return "CURRENCY"
     if seg == "MCX_COMM":     return "FUTCOM"
     return "EQUITY"
 
@@ -383,51 +383,38 @@ def fetch_intraday_1m_history(access_token: str, inst: Dict[str, Any], days: int
         "fromDate":        start_dt.strftime("%Y-%m-%d %H:%M:%S"),
         "toDate":          end_dt.strftime("%Y-%m-%d %H:%M:%S"),
     }
-    headers = {"Accept": "application/json", "Content-Type": "application/json",
-               "access-token": access_token}
+    headers = {"Accept":"application/json","Content-Type":"application/json","access-token":access_token}
     if client_id:
         headers["client-id"] = str(client_id)
     try:
         r = requests.post(HIST_INTRADAY_URL, headers=headers, json=payload, timeout=30)
         if not r.ok:
-            if logger:
-                logger.warning("Backfill failed for %s: HTTP %s %s",
-                               inst["name"], r.status_code, r.text[:200])
+            if logger: logger.warning("Backfill failed for %s: HTTP %s %s", inst["name"], r.status_code, r.text[:200])
             return []
         data = r.json()
-        ts  = data.get("timestamp", []) or []
-        op  = data.get("open",  []) or []
-        hi  = data.get("high",  []) or []
-        lo  = data.get("low",   []) or []
-        cl  = data.get("close", []) or []
-        vol = data.get("volume",[]) or []
-        n   = min(len(ts), len(op), len(hi), len(lo), len(cl))
+        ts  = data.get("timestamp",[]) or []
+        op  = data.get("open",     []) or []
+        hi  = data.get("high",     []) or []
+        lo  = data.get("low",      []) or []
+        cl  = data.get("close",    []) or []
+        vol = data.get("volume",   []) or []
+        n   = min(len(ts),len(op),len(hi),len(lo),len(cl))
         rows = []
         for i in range(n):
-            # Use raw REST timestamp — do NOT call normalize_dhan_epoch here.
-            # REST timestamps are already correct UTC epochs.
-            bucket = int(ts[i])
-            rows.append({
-                "bucket":     bucket,
-                "open":       float(op[i]),
-                "high":       float(hi[i]),
-                "low":        float(lo[i]),
-                "close":      float(cl[i]),
-                "tick_count": int(vol[i]) if i < len(vol) and vol[i] is not None else 1,
-            })
+            bucket = int(ts[i])   # raw REST timestamp — DO NOT normalize
+            rows.append({"bucket":bucket,"open":float(op[i]),"high":float(hi[i]),
+                         "low":float(lo[i]),"close":float(cl[i]),
+                         "tick_count":int(vol[i]) if i<len(vol) and vol[i] is not None else 1})
         rows.sort(key=lambda x: x["bucket"])
-        # Drop current incomplete candle — only keep closed bars
         if rows:
-            current_minute_bucket = (int(time.time()) // 60) * 60
+            current_minute_bucket = (int(time.time())//60)*60
             if int(rows[-1]["bucket"]) >= current_minute_bucket:
                 rows = rows[:-1]
-        if logger:
-            logger.info("Backfill loaded for %s: %d x 1m closed candles (seg=%s instr=%s)",
-                        inst["name"], len(rows), exchange_segment, instrument_type)
+        if logger: logger.info("Backfill: %s %d x 1m closed candles (seg=%s instr=%s)",
+                               inst["name"],len(rows),exchange_segment,instrument_type)
         return rows
     except Exception as e:
-        if logger:
-            logger.warning("Backfill exception for %s: %s", inst["name"], e)
+        if logger: logger.warning("Backfill exception for %s: %s", inst["name"], e)
         return []
 
 
@@ -457,11 +444,9 @@ def parse_prev_close(payload: bytes) -> Optional[Dict[str, Any]]:
 
 
 class RestCandlePoller:
-    """
-    Polls REST API once per minute, timed to fire 3s after each minute boundary.
-    Includes stale candle guard — skips candles that are too old (late API delivery).
-    """
-    POLL_DELAY_AFTER_MINUTE = 3
+    """Polls REST API once per minute, 3s after boundary. Includes stale candle guard."""
+    POLL_DELAY_AFTER_MINUTE = 7   # first poll: 7s after :00
+    POLL_SECOND_OFFSET      = 37  # second poll: at :37 — catches API-delayed candles
     LOOKBACK_DAYS_LIVE      = 1
 
     def __init__(self, client_id, access_token, instruments,
@@ -472,106 +457,93 @@ class RestCandlePoller:
         self.instruments  = instruments
         self.engines      = candle_engines
         self.on_new_1m_candle_cb = on_new_1m_candle_cb
-        self._tf_sec      = int(strategy_tf_sec)   # used for stale candle guard
+        self._tf_sec      = int(strategy_tf_sec)
         self.logger       = logger
         self.stop_event   = threading.Event()
         self._thread      = None
         self._last_seen_bucket: Dict[str, int] = {}
 
     def _seconds_until_next_poll(self) -> float:
-        elapsed   = time.time() % 60
-        remaining = 60 - elapsed
-        return remaining + self.POLL_DELAY_AFTER_MINUTE
+        """
+        Fire twice per minute: at :07 and :37.
+        Dhan API has ~30-60s publication delay after candle close.
+        :07 poll → reliably gets the candle from 2 minutes ago
+        :37 poll → catches the just-closed candle that was delayed
+        """
+        sec = time.time() % 60
+        if sec < self.POLL_DELAY_AFTER_MINUTE:
+            return self.POLL_DELAY_AFTER_MINUTE - sec
+        elif sec < self.POLL_SECOND_OFFSET:
+            return self.POLL_SECOND_OFFSET - sec
+        else:
+            # past :37, wait until next :07
+            return (60 - sec) + self.POLL_DELAY_AFTER_MINUTE
 
     def _poll_once(self):
         now = int(time.time())
-        # Max allowed lag: 2 full TF periods. Anything older is a late API candle.
-        max_lag_sec = max(self._tf_sec * 2, 180)
-
+        # Stale candle guard — skip candles that arrived too late from the API.
+        # Formula: max(3 TF periods, 10 minutes)
+        # - 1m TF:  max(180,  600) =  600s = 10 min  → handles normal API delays ✅
+        # - 45m TF: max(8100, 600) = 8100s = 2.25h   → still catches MCX 4.5h lunch-gap bug ✅
+        # - 65m TF: max(11700,600) = 11700s = 3.25h  → same ✅
+        max_lag_sec = max(self._tf_sec * 3, 600)
         for inst in self.instruments:
-            if self.stop_event.is_set():
-                return
+            if self.stop_event.is_set(): return
             sec = str(inst["security_id"])
             try:
                 rows = fetch_intraday_1m_history(
                     access_token=self.access_token, inst=inst,
                     days=self.LOOKBACK_DAYS_LIVE, logger=self.logger,
                     client_id=self.client_id)
-                if not rows:
-                    continue
-
+                if not rows: continue
                 prev_bucket = self._last_seen_bucket.get(sec, 0)
                 new_candles = [r for r in rows if int(r["bucket"]) > prev_bucket]
-
-                # Stale candle guard — drop candles that arrived too late.
-                # e.g. MCX lunch break candles delivered hours later.
-                fresh = [r for r in new_candles
-                         if (now - int(r["bucket"])) <= max_lag_sec]
-                stale = [r for r in new_candles
-                         if (now - int(r["bucket"])) > max_lag_sec]
+                fresh = [r for r in new_candles if (now - int(r["bucket"])) <= max_lag_sec]
+                stale = [r for r in new_candles if (now - int(r["bucket"])) > max_lag_sec]
                 if stale and self.logger:
                     for r in stale:
-                        self.logger.warning(
-                            "STALE candle skipped: %s bucket=%s lag=%ds",
-                            inst["name"], r["bucket"], now - int(r["bucket"]))
-
+                        self.logger.warning("STALE candle skipped: %s bucket=%s lag=%ds",
+                                            inst["name"], r["bucket"], now-int(r["bucket"]))
                 if new_candles:
-                    # Always update last seen to avoid re-processing
                     self._last_seen_bucket[sec] = int(rows[-1]["bucket"])
-
                 for candle in fresh:
                     engine = self.engines.get(sec)
-                    if engine:
-                        engine.seed_from_1m_candle(candle)
+                    if engine: engine.seed_from_1m_candle(candle)
                     if self.logger:
-                        self.logger.info(
-                            "REST 1m: %s bucket=%s O=%.4f H=%.4f L=%.4f C=%.4f",
-                            inst["name"], candle["bucket"],
-                            candle["open"], candle["high"],
-                            candle["low"], candle["close"])
+                        self.logger.info("REST 1m: %s bucket=%s O=%.4f H=%.4f L=%.4f C=%.4f",
+                            inst["name"],candle["bucket"],candle["open"],candle["high"],candle["low"],candle["close"])
                     self.on_new_1m_candle_cb(sec, candle)
-
             except Exception as e:
-                if self.logger:
-                    self.logger.warning("RestCandlePoller error %s: %s", inst["name"], e)
+                if self.logger: self.logger.warning("RestCandlePoller error %s: %s", inst["name"], e)
 
     def _run(self):
         while not self.stop_event.is_set():
             sleep_secs = self._seconds_until_next_poll()
             deadline   = time.time() + sleep_secs
             while time.time() < deadline:
-                if self.stop_event.is_set():
-                    return
+                if self.stop_event.is_set(): return
                 time.sleep(0.5)
-            if self.stop_event.is_set():
-                return
-            try:
-                self._poll_once()
+            if self.stop_event.is_set(): return
+            try: self._poll_once()
             except Exception as e:
-                if self.logger:
-                    self.logger.warning("RestCandlePoller loop error: %s", e)
+                if self.logger: self.logger.warning("RestCandlePoller loop error: %s", e)
 
     def seed_last_buckets(self, rows_by_sec: Dict[str, List[Dict[str, Any]]]):
         for sec, rows in rows_by_sec.items():
-            if rows:
-                self._last_seen_bucket[sec] = int(rows[-1]["bucket"])
+            if rows: self._last_seen_bucket[sec] = int(rows[-1]["bucket"])
 
     def start(self):
         self.stop_event.clear()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
-    def stop(self):
-        self.stop_event.set()
+    def stop(self): self.stop_event.set()
 
 
 class MarketDataEngine:
-    """Hybrid: WebSocket → LTP only | REST poll → accurate 1m OHLC every minute."""
-
-    def __init__(self, client_id: str, access_token: str,
-                 instruments: List[Dict[str, Any]],
-                 on_new_1m_candle, on_ltp,
-                 strategy_tf_sec: int = 60, logger=None):
+    """Hybrid: WebSocket -> LTP only | REST poll -> accurate 1m OHLC."""
+    def __init__(self, client_id: str, access_token: str, instruments: List[Dict[str, Any]],
+                 on_new_1m_candle, on_ltp, strategy_tf_sec: int = 60, logger=None):
         self.client_id    = client_id
         self.access_token = access_token
         self.ws_url = (
@@ -582,16 +554,13 @@ class MarketDataEngine:
         self.on_new_1m_candle_cb = on_new_1m_candle
         self.on_ltp_cb           = on_ltp
         self.logger              = logger
-
         self.stop_event = threading.Event()
-        self.ws         = None
-        self.thread     = None
+        self.ws = None; self.thread = None
 
         self.engines: Dict[str, CandleEngine] = {}
         for inst in instruments:
             sec = str(inst["security_id"])
-            self.engines[sec] = CandleEngine(
-                sec, inst["name"], inst["exchange"], inst.get("display_prec", 2))
+            self.engines[sec] = CandleEngine(sec, inst["name"], inst["exchange"], inst.get("display_prec", 2))
 
         self.rest_poller = RestCandlePoller(
             client_id=client_id, access_token=access_token,
@@ -601,25 +570,23 @@ class MarketDataEngine:
 
         self.last_ws_connect_time = None
         self.last_ws_error        = None
-        self.packet_counts = {
-            RESP_TICKER: 0, RESP_PREV_CLOSE: 0, RESP_DISCONNECT: 0, "other": 0}
+        self.packet_counts = {RESP_TICKER: 0, RESP_PREV_CLOSE: 0, RESP_DISCONNECT: 0, "other": 0}
         self._last_ticker_key: Dict[str, tuple] = {}
         self.lock = threading.Lock()
 
-    def seed_last_buckets(self, rows_by_sec: Dict[str, List[Dict[str, Any]]]):
+    def seed_last_buckets(self, rows_by_sec):
         self.rest_poller.seed_last_buckets(rows_by_sec)
 
     def on_open(self, ws):
         with self.lock:
             self.last_ws_connect_time = time.time()
             self.last_ws_error = None
-        ws.send(json.dumps({
-            "RequestCode":     REQ_SUB_TICKER,
+        sub_msg = {
+            "RequestCode": REQ_SUB_TICKER,
             "InstrumentCount": len(self.instruments),
-            "InstrumentList":  [{"ExchangeSegment": i["exchange"],
-                                  "SecurityId": str(i["security_id"])}
-                                 for i in self.instruments],
-        }))
+            "InstrumentList": [{"ExchangeSegment": i["exchange"], "SecurityId": str(i["security_id"])} for i in self.instruments],
+        }
+        ws.send(json.dumps(sub_msg))
 
     def on_message(self, ws, message):
         if isinstance(message, str):
@@ -627,24 +594,25 @@ class MarketDataEngine:
         hdr = parse_header_8(bytes(message))
         if not hdr:
             return
-        sec    = hdr["security_id"]
+
+        sec = hdr["security_id"]
         engine = self.engines.get(sec)
         if engine is None:
             return
+
         code = int(hdr["resp_code"])
 
         if code == RESP_TICKER:
             t = parse_ticker(hdr["payload"])
             if not t:
                 return
-            ltp       = float(t["ltp"])
+            ltp = float(t["ltp"])
             ltt_epoch = int(t["ltt_epoch"])
-            dedup     = (round(ltp, 8), ltt_epoch)
-            if self._last_ticker_key.get(sec) == dedup:
-                return
-            self._last_ticker_key[sec] = dedup
+            self._last_ticker_key[sec] = (round(ltp, 8), ltt_epoch)
+
             engine.on_tick(ltp, ltt_epoch)   # LTP only
             self.on_ltp_cb(sec, ltp, ltt_epoch)
+
             with self.lock:
                 self.packet_counts[RESP_TICKER] += 1
             return
@@ -677,8 +645,12 @@ class MarketDataEngine:
         while not self.stop_event.is_set():
             try:
                 self.ws = websocket.WebSocketApp(
-                    self.ws_url, on_open=self.on_open, on_message=self.on_message,
-                    on_error=self.on_error, on_close=self.on_close)
+                    self.ws_url,
+                    on_open=self.on_open,
+                    on_message=self.on_message,
+                    on_error=self.on_error,
+                    on_close=self.on_close,
+                )
                 self.ws.run_forever(ping_interval=20, ping_timeout=10)
             except Exception as e:
                 with self.lock:
@@ -696,8 +668,7 @@ class MarketDataEngine:
         self.stop_event.set()
         self.rest_poller.stop()
         try:
-            if self.ws:
-                self.ws.close()
+            if self.ws: self.ws.close()
         except Exception:
             pass
 
@@ -705,6 +676,6 @@ class MarketDataEngine:
         with self.lock:
             return {
                 "last_ws_connect_time": self.last_ws_connect_time,
-                "last_ws_error":        self.last_ws_error,
-                "packet_counts":        dict(self.packet_counts),
+                "last_ws_error": self.last_ws_error,
+                "packet_counts": dict(self.packet_counts),
             }
