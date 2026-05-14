@@ -1,4 +1,4 @@
-"""Dhan WS HA Paper/Live Trader | GUI v9"""
+"""Dhan WS HA Paper/Live Trader | GUI v9 | Balfund Trading Pvt. Ltd."""
 import os, sys, json, threading
 from datetime import datetime
 from pathlib import Path
@@ -34,13 +34,23 @@ def _save_env_key(key, value):
     with open(ENV_FILE,"w",encoding="utf-8") as f: f.writelines(lines)
     os.environ[key]=value
 
-DARK_BG="#0d1117"; PANEL_BG="#161b22"; CARD_BG="#21262d"
-ACCENT="#238636"; ACCENT_H="#2ea043"; RED_COL="#da3633"; RED_H="#b91c1c"
-ORANGE_COL="#d29922"; CYAN_COL="#58a6ff"; WHITE_COL="#e6edf3"
-GREY_COL="#8b949e"; BORDER="#30363d"; LIVE_COL="#f85149"
+# ── Palette ───────────────────────────────────────────────────────────────────
+DARK_BG    = "#f0f4f8"   # light page background
+PANEL_BG   = "#ffffff"   # white panels
+CARD_BG    = "#dbeafe"   # light blue cards
+ACCENT     = "#1d4ed8"   # strong blue
+ACCENT_H   = "#1e3a8a"   # dark blue hover
+RED_COL    = "#dc2626"   # red stop/error
+RED_H      = "#991b1b"
+ORANGE_COL = "#b45309"   # amber warnings
+CYAN_COL   = "#1d4ed8"   # blue headings
+WHITE_COL  = "#111827"   # near-black main text
+GREY_COL   = "#1f2937"   # dark grey secondary text
+BORDER     = "#93c5fd"   # light blue border
+LIVE_COL   = "#dc2626"   # red live mode
 F_TITLE=("Segoe UI",20,"bold"); F_HEAD=("Segoe UI",15,"bold")
-F_LABEL=("Segoe UI",13); F_BTN=("Segoe UI",13,"bold")
-F_MONO=("Consolas",12); F_MONO_S=("Consolas",11); F_SMALL=("Segoe UI",11)
+F_LABEL=("Segoe UI",13,"bold"); F_BTN=("Segoe UI",13,"bold")
+F_MONO=("Consolas",12); F_MONO_S=("Consolas",11); F_SMALL=("Segoe UI",11,"bold")
 
 ALL_SYMBOLS=["CRUDEOILM","GOLDPETAL","SILVERMIC"]
 TF_OPTIONS=["1m","3m","5m","7m","9m","45m","65m","130m"]
@@ -54,7 +64,8 @@ VARIATION_LABELS={
 KC_VARIATIONS={"keltner","rsi_keltner"}; RSI_VARIATIONS={"rsi_keltner"}
 ORDER_TYPES=["MARKET","SL-M","LIMIT"]
 SYM_BUF_DEFAULTS={"CRUDEOILM":"3.0","GOLDPETAL":"10.0","SILVERMIC":"10.0"}
-ctk.set_appearance_mode("dark"); ctk.set_default_color_theme("dark-blue")
+ctk.set_appearance_mode("light")
+ctk.set_default_color_theme("blue")
 
 
 class TokenTab(ctk.CTkFrame):
@@ -80,7 +91,8 @@ class TokenTab(ctk.CTkFrame):
         self.gen_btn=ctk.CTkButton(btn_row,text="⚡  Generate Token",width=200,height=42,fg_color=ACCENT,hover_color=ACCENT_H,text_color=WHITE_COL,font=F_BTN,command=self._generate_token); self.gen_btn.pack(side="left",padx=10)
         ctk.CTkButton(btn_row,text="✅  Verify Token",width=200,height=42,fg_color=CARD_BG,hover_color=BORDER,text_color=WHITE_COL,font=F_BTN,command=self._verify_token).pack(side="left",padx=10)
         ctk.CTkLabel(self,text="Log",anchor="w",font=("Segoe UI",12,"bold"),text_color=GREY_COL).pack(padx=80,anchor="w",pady=(14,2))
-        self.log_box=ctk.CTkTextbox(self,height=150,font=F_MONO_S,fg_color=PANEL_BG,text_color=WHITE_COL,border_color=BORDER,border_width=1); self.log_box.pack(padx=80,fill="x"); self.log_box.configure(state="disabled")
+        self.log_box=ctk.CTkTextbox(self,height=150,font=F_MONO_S,fg_color=PANEL_BG,text_color=WHITE_COL,border_color=BORDER,border_width=1)
+        self.log_box.pack(padx=80,fill="x"); self.log_box.configure(state="disabled")
         sf=ctk.CTkFrame(self,fg_color=PANEL_BG,corner_radius=12); sf.pack(padx=80,fill="x",pady=(14,0))
         ctk.CTkLabel(sf,text="🔗  dhan-token-generator  (shared token)",font=("Segoe UI",12,"bold"),text_color=CYAN_COL).pack(side="left",padx=16,pady=10)
         self.shared_lbl=ctk.CTkLabel(sf,text="Checking…",width=240,font=F_SMALL,text_color=GREY_COL); self.shared_lbl.pack(side="left",padx=10)
@@ -101,7 +113,7 @@ class TokenTab(ctk.CTkFrame):
         _save_env_key("DHAN_TOTP_SECRET",self.e_totp.get().strip())
         token=self.e_token.get().strip()
         if token: _save_env_key("DHAN_ACCESS_TOKEN",token)
-        self._log("✅  Credentials saved to .env")
+        self._log("✅  Credentials saved.")
 
     def _generate_token(self):
         self._save_creds(); self.gen_btn.configure(state="disabled",text="⏳  Generating…"); self._log("⏳  Generating token…")
@@ -116,8 +128,8 @@ class TokenTab(ctk.CTkFrame):
                 self.after(0,_done)
             except Exception as e:
                 err=str(e)
-                def _fail(): self._log(f"❌  {err}"); self.gen_btn.configure(state="normal",text="⚡  Generate Token")
-                self.after(0,_fail)
+                self.after(0,lambda: self._log(f"❌  {err}"))
+                self.after(0,lambda: self.gen_btn.configure(state="normal",text="⚡  Generate Token"))
         threading.Thread(target=_run,daemon=True).start()
 
     def _verify_token(self):
@@ -127,9 +139,9 @@ class TokenTab(ctk.CTkFrame):
                 from dhan_token_manager import load_config, verify_token
                 cfg=load_config()
                 if verify_token(cfg["client_id"],cfg["access_token"]):
-                    self.after(0,lambda:self._log("✅  Token VALID.")); self.after(0,lambda:self.on_token_saved(cfg["client_id"],cfg["access_token"]))
-                else: self.after(0,lambda:self._log("❌  Token INVALID."))
-            except Exception as e: err=str(e); self.after(0,lambda:self._log(f"❌  {err}"))
+                    self.after(0,lambda: self._log("✅  Token VALID.")); self.after(0,lambda: self.on_token_saved(cfg["client_id"],cfg["access_token"]))
+                else: self.after(0,lambda: self._log("❌  Token INVALID."))
+            except Exception as e: err=str(e); self.after(0,lambda: self._log(f"❌  {err}"))
         threading.Thread(target=_run,daemon=True).start()
 
     def _check_shared_status(self):
@@ -169,9 +181,11 @@ class StrategyTab(ctk.CTkFrame):
 
         row1=ctk.CTkFrame(self,fg_color=CARD_BG,corner_radius=10); row1.pack(fill="x",padx=14,pady=(10,4))
         ctk.CTkLabel(row1,text="Timeframe:",font=F_LABEL,text_color=WHITE_COL).pack(side="left",padx=(16,6),pady=10)
-        self.tf_dd=ctk.CTkOptionMenu(row1,values=TF_OPTIONS,width=110,height=36,fg_color=PANEL_BG,button_color=BORDER,button_hover_color=ACCENT,text_color=WHITE_COL,font=F_LABEL,dropdown_font=F_LABEL); self.tf_dd.set("65m"); self.tf_dd.pack(side="left",padx=6)
+        self.tf_dd=ctk.CTkOptionMenu(row1,values=TF_OPTIONS,width=110,height=36,fg_color=PANEL_BG,button_color=BORDER,button_hover_color=ACCENT,text_color=WHITE_COL,font=F_LABEL,dropdown_font=F_LABEL)
+        self.tf_dd.set("65m"); self.tf_dd.pack(side="left",padx=6)
         ctk.CTkLabel(row1,text="Variation:",font=F_LABEL,text_color=WHITE_COL).pack(side="left",padx=(18,6))
-        self.var_dd=ctk.CTkOptionMenu(row1,values=[VARIATION_LABELS[v] for v in VARIATION_OPTIONS],width=310,height=36,fg_color=PANEL_BG,button_color=BORDER,button_hover_color=ACCENT,text_color=WHITE_COL,font=F_LABEL,dropdown_font=F_LABEL,command=self._on_variation_change); self.var_dd.set(VARIATION_LABELS["ha_static"]); self.var_dd.pack(side="left",padx=6)
+        self.var_dd=ctk.CTkOptionMenu(row1,values=[VARIATION_LABELS[v] for v in VARIATION_OPTIONS],width=310,height=36,fg_color=PANEL_BG,button_color=BORDER,button_hover_color=ACCENT,text_color=WHITE_COL,font=F_LABEL,dropdown_font=F_LABEL,command=self._on_variation_change)
+        self.var_dd.set(VARIATION_LABELS["ha_static"]); self.var_dd.pack(side="left",padx=6)
 
         row2=ctk.CTkFrame(self,fg_color=CARD_BG,corner_radius=10); row2.pack(fill="x",padx=14,pady=(0,4))
         ctk.CTkLabel(row2,text="Symbols:",font=F_LABEL,text_color=WHITE_COL).pack(side="left",padx=(16,10),pady=10)
@@ -195,7 +209,8 @@ class StrategyTab(ctk.CTkFrame):
         ctk.CTkRadioButton(row3,text="🔴 Live",variable=self._mode_var,value="LIVE",font=F_LABEL,text_color=LIVE_COL,fg_color=LIVE_COL,hover_color="#c0392b",command=self._on_mode_change).pack(side="left",padx=6)
         self.live_warn=ctk.CTkLabel(row3,text="",font=("Segoe UI",11,"bold"),text_color=LIVE_COL); self.live_warn.pack(side="left",padx=(4,16))
         ctk.CTkLabel(row3,text="Order:",font=F_LABEL,text_color=WHITE_COL).pack(side="left",padx=(4,6))
-        self.order_dd=ctk.CTkOptionMenu(row3,values=ORDER_TYPES,width=130,height=36,fg_color=PANEL_BG,button_color=BORDER,button_hover_color=ACCENT,text_color=WHITE_COL,font=F_LABEL,dropdown_font=F_LABEL,command=self._on_order_type_change); self.order_dd.set("MARKET"); self.order_dd.pack(side="left",padx=6)
+        self.order_dd=ctk.CTkOptionMenu(row3,values=ORDER_TYPES,width=130,height=36,fg_color=PANEL_BG,button_color=BORDER,button_hover_color=ACCENT,text_color=WHITE_COL,font=F_LABEL,dropdown_font=F_LABEL,command=self._on_order_type_change)
+        self.order_dd.set("MARKET"); self.order_dd.pack(side="left",padx=6)
         self.trig_frame=ctk.CTkFrame(row3,fg_color="transparent")
         ctk.CTkLabel(self.trig_frame,text="Trigger Offset:",font=F_LABEL,text_color=WHITE_COL).pack(side="left",padx=(10,6))
         self.e_trig=ctk.CTkEntry(self.trig_frame,width=80,height=36,fg_color=PANEL_BG,border_color=BORDER,text_color=WHITE_COL,font=F_MONO_S); self.e_trig.insert(0,"2.0"); self.e_trig.pack(side="left")
@@ -233,24 +248,33 @@ class StrategyTab(ctk.CTkFrame):
         ctk.CTkButton(btn_row,text="💾  Save Settings",width=160,height=38,fg_color=CARD_BG,hover_color=BORDER,text_color=CYAN_COL,font=F_BTN,command=self._save_settings).pack(side="left",padx=8)
         self.info_lbl=ctk.CTkLabel(btn_row,text="",font=F_SMALL,text_color=GREY_COL); self.info_lbl.pack(side="left",padx=8)
 
-        self.dash=ctk.CTkTextbox(self,font=F_MONO,fg_color=PANEL_BG,text_color=WHITE_COL,border_color=BORDER,border_width=1,wrap="none"); self.dash.pack(fill="both",expand=True,padx=14,pady=(0,6)); self.dash.configure(state="disabled")
+        self.dash=ctk.CTkTextbox(self,font=F_MONO,fg_color=PANEL_BG,text_color=WHITE_COL,border_color=BORDER,border_width=2,wrap="none")
+        self.dash.pack(fill="both",expand=True,padx=14,pady=(0,6)); self.dash.configure(state="disabled")
         ctk.CTkLabel(self,text="Event Log",anchor="w",font=("Segoe UI",12,"bold"),text_color=GREY_COL).pack(padx=14,anchor="w")
-        self.event_log=ctk.CTkTextbox(self,height=110,font=F_MONO_S,fg_color=PANEL_BG,text_color=WHITE_COL,border_color=BORDER,border_width=1); self.event_log.pack(fill="x",padx=14,pady=(2,12)); self.event_log.configure(state="disabled")
+        self.event_log=ctk.CTkTextbox(self,height=110,font=F_MONO_S,fg_color=CARD_BG,text_color=WHITE_COL,border_color=BORDER,border_width=2)
+        self.event_log.pack(fill="x",padx=14,pady=(2,12)); self.event_log.configure(state="disabled")
 
     def _collect_settings(self):
-        return {"tf":self.tf_dd.get(),"variation":self.var_dd.get(),"mode":self._mode_var.get(),"order_type":self.order_dd.get(),"trig_offset":self.e_trig.get(),"lmt_offset":self.e_lmt.get(),"global_sl":self.e_gsl.get(),"mcx_h":self.e_mcx_h.get(),"mcx_m":self.e_mcx_m.get(),"kc_len":self.e_kc_len.get(),"kc_atr":self.e_kc_atr.get(),"kc_mult":self.e_kc_mult.get(),"rsi_len":self.e_rsi_len.get(),"rsi_buy":self.e_rsi_buy.get(),"rsi_sell":self.e_rsi_sell.get(),"symbols":{sym:{"enabled":self._sym_vars[sym].get(),"lot":self._lot_entries[sym].get(),"buf":self._buf_entries[sym].get()} for sym in ALL_SYMBOLS}}
+        return {"tf":self.tf_dd.get(),"variation":self.var_dd.get(),"mode":self._mode_var.get(),
+                "order_type":self.order_dd.get(),"trig_offset":self.e_trig.get(),"lmt_offset":self.e_lmt.get(),
+                "global_sl":self.e_gsl.get(),"mcx_h":self.e_mcx_h.get(),"mcx_m":self.e_mcx_m.get(),
+                "kc_len":self.e_kc_len.get(),"kc_atr":self.e_kc_atr.get(),"kc_mult":self.e_kc_mult.get(),
+                "rsi_len":self.e_rsi_len.get(),"rsi_buy":self.e_rsi_buy.get(),"rsi_sell":self.e_rsi_sell.get(),
+                "symbols":{sym:{"enabled":self._sym_vars[sym].get(),"lot":self._lot_entries[sym].get(),"buf":self._buf_entries[sym].get()} for sym in ALL_SYMBOLS}}
 
     def _apply_settings(self,s):
         if s.get("tf") in TF_OPTIONS: self.tf_dd.set(s["tf"])
-        if s.get("variation") in [VARIATION_LABELS[v] for v in VARIATION_OPTIONS]: self.var_dd.set(s["variation"]); self._on_variation_change(s["variation"])
+        if s.get("variation") in [VARIATION_LABELS[v] for v in VARIATION_OPTIONS]:
+            self.var_dd.set(s["variation"]); self._on_variation_change(s["variation"])
         if s.get("mode") in ("PAPER","LIVE"): self._mode_var.set(s["mode"]); self._on_mode_change()
         if s.get("order_type") in ORDER_TYPES: self.order_dd.set(s["order_type"]); self._on_order_type_change(s["order_type"])
         def _set(e,k):
             if s.get(k) is not None: e.delete(0,"end"); e.insert(0,str(s[k]))
-        _set(self.e_trig,"trig_offset"); _set(self.e_lmt,"lmt_offset"); _set(self.e_gsl,"global_sl")
-        _set(self.e_mcx_h,"mcx_h"); _set(self.e_mcx_m,"mcx_m")
-        _set(self.e_kc_len,"kc_len"); _set(self.e_kc_atr,"kc_atr"); _set(self.e_kc_mult,"kc_mult")
-        _set(self.e_rsi_len,"rsi_len"); _set(self.e_rsi_buy,"rsi_buy"); _set(self.e_rsi_sell,"rsi_sell")
+        for e,k in [(self.e_trig,"trig_offset"),(self.e_lmt,"lmt_offset"),(self.e_gsl,"global_sl"),
+                    (self.e_mcx_h,"mcx_h"),(self.e_mcx_m,"mcx_m"),(self.e_kc_len,"kc_len"),
+                    (self.e_kc_atr,"kc_atr"),(self.e_kc_mult,"kc_mult"),(self.e_rsi_len,"rsi_len"),
+                    (self.e_rsi_buy,"rsi_buy"),(self.e_rsi_sell,"rsi_sell")]:
+            _set(e,k)
         syms=s.get("symbols",{}); all_en=True
         for sym in ALL_SYMBOLS:
             if sym in syms:
@@ -258,7 +282,8 @@ class StrategyTab(ctk.CTkFrame):
                 if not en: all_en=False
                 lot=syms[sym].get("lot",""); self._lot_entries[sym].delete(0,"end")
                 if lot: self._lot_entries[sym].insert(0,str(lot))
-                buf=syms[sym].get("buf",SYM_BUF_DEFAULTS.get(sym,"3.0")); self._buf_entries[sym].delete(0,"end"); self._buf_entries[sym].insert(0,str(buf))
+                buf=syms[sym].get("buf",SYM_BUF_DEFAULTS.get(sym,"3.0"))
+                self._buf_entries[sym].delete(0,"end"); self._buf_entries[sym].insert(0,str(buf))
         self._all_var.set(all_en)
 
     def _save_settings(self):
@@ -282,16 +307,13 @@ class StrategyTab(ctk.CTkFrame):
         var=self._label_to_variation(label); show_kc=var in KC_VARIATIONS; show_rsi=var in RSI_VARIATIONS
         if show_kc or show_rsi:
             self.params_row.pack(fill="x",padx=14,pady=(0,4))
-            if show_kc: self.kc_frame.pack(side="left")
-            else: self.kc_frame.pack_forget()
-            if show_rsi: self.rsi_frame.pack(side="left",padx=(10,0))
-            else: self.rsi_frame.pack_forget()
+            (self.kc_frame.pack if show_kc else self.kc_frame.pack_forget)(side="left") if show_kc else self.kc_frame.pack_forget()
+            (self.rsi_frame.pack if show_rsi else self.rsi_frame.pack_forget)(side="left",padx=(10,0)) if show_rsi else self.rsi_frame.pack_forget()
         else: self.params_row.pack_forget()
     def _label_to_variation(self,label):
         for v,l in VARIATION_LABELS.items():
             if l==label: return v
         return "ha_static"
-
     def _elog(self,msg):
         ts=datetime.now().strftime("%H:%M:%S"); self.event_log.configure(state="normal")
         self.event_log.insert("end",f"[{ts}]  {msg}\n"); self.event_log.see("end"); self.event_log.configure(state="disabled")
@@ -315,18 +337,6 @@ class StrategyTab(ctk.CTkFrame):
             try: r[sym]=float(e.get())
             except: pass
         return r
-    def _get_global_sl(self):
-        try: return float(self.e_gsl.get())
-        except: return 0.0
-    def _get_mcx_end(self):
-        try: return (int(self.e_mcx_h.get()),int(self.e_mcx_m.get()))
-        except: return (23,30)
-    def _get_kc_params(self):
-        try: return {"kc_length":int(self.e_kc_len.get()),"kc_atr_length":int(self.e_kc_atr.get()),"kc_multiplier":float(self.e_kc_mult.get())}
-        except: return {"kc_length":21,"kc_atr_length":21,"kc_multiplier":0.5}
-    def _get_rsi_params(self):
-        try: return {"rsi_length":int(self.e_rsi_len.get()),"rsi_buy_level":float(self.e_rsi_buy.get()),"rsi_sell_level":float(self.e_rsi_sell.get())}
-        except: return {"rsi_length":14,"rsi_buy_level":52.0,"rsi_sell_level":32.0}
 
     def _start(self):
         if self._running: return
@@ -347,9 +357,18 @@ class StrategyTab(ctk.CTkFrame):
         if is_live and not messagebox.askyesno("⚠️  LIVE TRADING","REAL orders will be placed.\n\nAre you sure?"): return
         tf_val=self._get_tf(); sym_filter=self._get_symbols_filter(); variation=self._get_variation()
         lot_ov=self._get_lot_overrides(); buf_ov=self._get_buf_overrides(); order_type=self.order_dd.get()
-        trig_off=float(self.e_trig.get() or 0); lmt_off=float(self.e_lmt.get() or 0)
-        global_sl=self._get_global_sl(); mcx_end=self._get_mcx_end()
-        kc=self._get_kc_params(); rsi=self._get_rsi_params()
+        try: trig_off=float(self.e_trig.get() or 0)
+        except: trig_off=0.0
+        try: lmt_off=float(self.e_lmt.get() or 0)
+        except: lmt_off=0.0
+        try: global_sl=float(self.e_gsl.get() or 0)
+        except: global_sl=0.0
+        try: mcx_end=(int(self.e_mcx_h.get()),int(self.e_mcx_m.get()))
+        except: mcx_end=(23,30)
+        try: kc={"kc_length":int(self.e_kc_len.get()),"kc_atr_length":int(self.e_kc_atr.get()),"kc_multiplier":float(self.e_kc_mult.get())}
+        except: kc={"kc_length":21,"kc_atr_length":21,"kc_multiplier":0.5}
+        try: rsi={"rsi_length":int(self.e_rsi_len.get()),"rsi_buy_level":float(self.e_rsi_buy.get()),"rsi_sell_level":float(self.e_rsi_sell.get())}
+        except: rsi={"rsi_length":14,"rsi_buy_level":52.0,"rsi_sell_level":32.0}
         sym_str=", ".join(selected) if sym_filter else "All"; mode_str="🔴 LIVE" if is_live else "📄 Paper"
         self.start_btn.configure(state="disabled"); self.stop_btn.configure(state="normal"); self.squareoff_btn.configure(state="normal")
         self.status_lbl.configure(text="⏳  Starting…",text_color=LIVE_COL if is_live else ORANGE_COL)
@@ -358,15 +377,22 @@ class StrategyTab(ctk.CTkFrame):
         def _run():
             try:
                 from main import TradingApp
-                self._app=TradingApp(strategy_tf=tf_val,symbols_filter=sym_filter,variation=variation,lot_size_overrides=lot_ov,buffer_overrides=buf_ov,live_mode=is_live,order_type=order_type,trigger_offset=trig_off,limit_offset=lmt_off,global_sl_pct=global_sl,mcx_session_end=mcx_end,client_id=self._client_id,access_token=self._access_token,**kc,**rsi)
+                self._app=TradingApp(strategy_tf=tf_val,symbols_filter=sym_filter,variation=variation,
+                    lot_size_overrides=lot_ov,buffer_overrides=buf_ov,live_mode=is_live,
+                    order_type=order_type,trigger_offset=trig_off,limit_offset=lmt_off,
+                    global_sl_pct=global_sl,mcx_session_end=mcx_end,
+                    client_id=self._client_id,access_token=self._access_token,**kc,**rsi)
                 self._app.start(with_terminal_ui=False); self._running=True
                 run_col=LIVE_COL if is_live else "#3fb950"; run_txt="🔴  LIVE" if is_live else "🟢  Running"
                 self.after(0,lambda:self.status_lbl.configure(text=run_txt,text_color=run_col))
                 self.after(0,lambda:self._elog("✅  Strategy started.")); self.after(0,self._poll_dashboard)
             except Exception as e:
                 err=str(e); self._running=False
-                self.after(0,lambda:self._elog(f"❌  {err}")); self.after(0,lambda:self.status_lbl.configure(text="❌  Error",text_color=RED_COL))
-                self.after(0,lambda:self.start_btn.configure(state="normal")); self.after(0,lambda:self.stop_btn.configure(state="disabled")); self.after(0,lambda:self.squareoff_btn.configure(state="disabled"))
+                self.after(0,lambda:self._elog(f"❌  {err}"))
+                self.after(0,lambda:self.status_lbl.configure(text="❌  Error",text_color=RED_COL))
+                self.after(0,lambda:self.start_btn.configure(state="normal"))
+                self.after(0,lambda:self.stop_btn.configure(state="disabled"))
+                self.after(0,lambda:self.squareoff_btn.configure(state="disabled"))
         threading.Thread(target=_run,daemon=True).start()
 
     def _stop(self):
@@ -377,15 +403,17 @@ class StrategyTab(ctk.CTkFrame):
             except: pass
             self._app=None
             self.after(0,lambda:self.status_lbl.configure(text="⏹  Stopped",text_color=GREY_COL))
-            self.after(0,lambda:self.start_btn.configure(state="normal")); self.after(0,lambda:self.stop_btn.configure(state="disabled")); self.after(0,lambda:self.squareoff_btn.configure(state="disabled"))
-            self.after(0,lambda:self.info_lbl.configure(text="")); self.after(0,lambda:self._elog("✅  Stopped."))
+            self.after(0,lambda:self.start_btn.configure(state="normal"))
+            self.after(0,lambda:self.stop_btn.configure(state="disabled"))
+            self.after(0,lambda:self.squareoff_btn.configure(state="disabled"))
+            self.after(0,lambda:self.info_lbl.configure(text=""))
+            self.after(0,lambda:self._elog("✅  Stopped."))
         threading.Thread(target=_run,daemon=True).start()
 
     def _square_off(self):
         if not self._running or self._app is None: return
         is_live=getattr(self._app,"live_mode",False)
-        msg="Close ALL LIVE positions?\n\nAre you sure?" if is_live else "Close ALL paper positions?"
-        if not messagebox.askyesno("Square Off All",msg): return
+        if not messagebox.askyesno("Square Off All","Close ALL positions?\n\nAre you sure?"): return
         self._elog("⬛  Squaring off…")
         def _run():
             try: self._app.square_off_all(); self.after(0,lambda:self._elog("✅  All squared off."))
@@ -403,15 +431,17 @@ class StrategyTab(ctk.CTkFrame):
     def _render_dashboard(self,snap):
         lines=[]; now=datetime.now().strftime("%Y-%m-%d %H:%M:%S"); pkt=snap["packets"]
         mode="🔴 LIVE" if snap.get("live_mode") else "📄 Paper"; ot=snap.get("order_type","MARKET")
-        gsl=snap.get("global_sl_pct",0); gsl_r=snap.get("global_sl_rupees",0); mh,mm=snap.get("mcx_session_end",(23,30))
-        gsl_str=f"GSL={gsl}% (₹{gsl_r:.0f})" if gsl>0 else "GSL=off"; gsl_hit=snap.get("global_sl_hit",False)
+        gsl=snap.get("global_sl_pct",0); gsl_r=snap.get("global_sl_rupees",0)
+        mh,mm=snap.get("mcx_session_end",(23,30)); gsl_hit=snap.get("global_sl_hit",False)
+        gsl_str=f"GSL={gsl}% (₹{gsl_r:.0f})" if gsl>0 else "GSL=off"
         lines.append(f"  {mode}  │  TF {snap['strategy_tf']}m  │  {snap['variation']}  │  {ot}  │  {gsl_str}{'  ⛔ STOPPED' if gsl_hit else ''}  │  MCX End {mh:02d}:{mm:02d}  │  {now}  │  WS: {snap['ws_uptime']}")
         lines.append("─"*178)
         lines.append(f"  {'Symbol':<14}  {'Contract':<22}  {'LTP':>10}  {'Pos':>6}  {'Entry':>10}  {'Pending':>7}  {'Trigger':>10}  {'Buf':>6}  {'Lot':>5}  {'uPnL':>12}  {'rPnL':>12}  {'Event':<30}")
         lines.append("─"*178)
         for s in snap["symbols"]:
             prec=s["prec"]; ltp=f"{s['ltp']:.{prec}f}" if s["ltp"] is not None else "-"
-            entry=f"{s['entry']:.{prec}f}" if s["entry"] is not None else "-"; trig=f"{s['trigger']:.{prec}f}" if s["trigger"] is not None else "-"
+            entry=f"{s['entry']:.{prec}f}" if s["entry"] is not None else "-"
+            trig=f"{s['trigger']:.{prec}f}" if s["trigger"] is not None else "-"
             upnl=f"{s['unrealized']:>+.2f}"; rpnl=f"{s['realized']:>+.2f}"; contr=str(s.get("contract_display") or "-")[:22]
             lines.append(f"  {s['name'][:14]:<14}  {contr:<22}  {ltp:>10}  {s['position']:>6}  {entry:>10}  {s['pending']:>7}  {trig:>10}  {s['buffer']:>6.1f}  {s['lot']:>5}  {upnl:>12}  {rpnl:>12}  {str(s['event'])[:30]:<30}")
         lines.append("─"*178)
@@ -440,10 +470,13 @@ class MainApp(ctk.CTk):
         self.geometry("1450x980"); self.minsize(1150,780); self.configure(fg_color=DARK_BG); self._build()
 
     def _build(self):
-        hdr=ctk.CTkFrame(self,fg_color=PANEL_BG,corner_radius=0,height=52); hdr.pack(fill="x"); hdr.pack_propagate(False)
-        ctk.CTkLabel(hdr,text="  BALFUND TRADING PVT. LTD.  |  Dhan HA Trader",font=("Segoe UI",14,"bold"),text_color=CYAN_COL).pack(side="left",padx=18)
-        ctk.CTkLabel(hdr,text="Paper & Live Trading — Use Live Mode with caution",font=F_SMALL,text_color=GREY_COL).pack(side="right",padx=18)
-        tabs=ctk.CTkTabview(self,fg_color=DARK_BG,segmented_button_fg_color=PANEL_BG,segmented_button_selected_color=ACCENT,segmented_button_unselected_color=PANEL_BG,segmented_button_selected_hover_color=ACCENT_H,text_color=WHITE_COL); tabs.pack(fill="both",expand=True)
+        hdr=ctk.CTkFrame(self,fg_color=ACCENT,corner_radius=0,height=52); hdr.pack(fill="x"); hdr.pack_propagate(False)
+        ctk.CTkLabel(hdr,text="  BALFUND TRADING PVT. LTD.  |  Dhan HA Trader",font=("Segoe UI",14,"bold"),text_color="#ffffff").pack(side="left",padx=18)
+        ctk.CTkLabel(hdr,text="Paper & Live Trading — Use Live Mode with caution",font=F_SMALL,text_color="#bfdbfe").pack(side="right",padx=18)
+        tabs=ctk.CTkTabview(self,fg_color=DARK_BG,segmented_button_fg_color=CARD_BG,
+            segmented_button_selected_color=ACCENT,segmented_button_unselected_color=CARD_BG,
+            segmented_button_selected_hover_color=ACCENT_H,text_color=WHITE_COL)
+        tabs.pack(fill="both",expand=True)
         tabs.add("🔑  Token Manager"); tabs.add("📈  Live Strategy")
         self.strategy_tab=StrategyTab(tabs.tab("📈  Live Strategy")); self.strategy_tab.pack(fill="both",expand=True)
         self.token_tab=TokenTab(tabs.tab("🔑  Token Manager"),on_token_saved=self._on_token_saved); self.token_tab.pack(fill="both",expand=True)
@@ -452,6 +485,7 @@ class MainApp(ctk.CTk):
     def on_closing(self):
         if self.strategy_tab._running and self.strategy_tab._app: self.strategy_tab._app.stop()
         self.destroy()
+
 
 if __name__=="__main__":
     app=MainApp(); app.protocol("WM_DELETE_WINDOW",app.on_closing); app.mainloop()
