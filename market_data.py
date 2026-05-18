@@ -609,9 +609,10 @@ class MarketDataEngine:
             ltp = float(t["ltp"])
             ltt_epoch = int(t["ltt_epoch"])
             self._last_ticker_key[sec] = (round(ltp, 8), ltt_epoch)
-
-            engine.on_tick(ltp, ltt_epoch)   # LTP only
-            self.on_ltp_cb(sec, ltp, ltt_epoch)
+            # Normalize before passing to callbacks — Dhan WS sends IST epoch
+            norm_epoch = normalize_dhan_epoch(ltt_epoch)
+            engine.on_tick(ltp, ltt_epoch)   # LTP only (on_tick normalizes internally)
+            self.on_ltp_cb(sec, ltp, norm_epoch)
 
             with self.lock:
                 self.packet_counts[RESP_TICKER] += 1

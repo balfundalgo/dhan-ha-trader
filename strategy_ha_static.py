@@ -113,15 +113,13 @@ class HAStaticTriggerStrategy:
         self.kc_atr_length = int(kc_atr_length)
         self.kc_multiplier = float(kc_multiplier)
         self.buffer = float(buffer_override) if buffer_override is not None else float(BUFFER_MAP.get(self.name, 1.0))
-
-        # Session start in UTC seconds from day midnight for bucket alignment.
-        # MCX_COMM: 09:00 IST = 03:30 UTC = 12600s
-        # NSE/BSE:  09:15 IST = 03:45 UTC = 13500s
+        # Session anchor for correct bucket alignment
+        # MCX_COMM: 09:00 IST = 03:30 UTC | NSE/BSE: 09:15 IST = 03:45 UTC
         exch = str(exchange).strip().upper()
         if exch == "MCX_COMM":
-            self._session_start_utc_secs = 9 * 3600 - 19800        # 09:00 IST
+            self._session_start_utc_secs = 9*3600 - 19800
         else:
-            self._session_start_utc_secs = 9 * 3600 + 15 * 60 - 19800  # 09:15 IST
+            self._session_start_utc_secs = 9*3600 + 15*60 - 19800
 
         self.agg_current: Optional[Dict[str, Any]] = None
         self.agg_completed = deque(maxlen=500)
@@ -143,20 +141,6 @@ class HAStaticTriggerStrategy:
     def on_new_1m_candle(self, row_1m: Dict[str, Any]) -> bool:
         ts = int(row_1m["bucket"])
 
-        # Session-anchor aligned bucket — matches exchange boundaries exactly.
-        # MCX 45m: 09:00, 09:45, 10:30...  NSE 45m: 09:15, 10:00, 10:45...
-        if self.strategy_tf <= 1:
-            sb = ts - (ts % 60)
-        else:
-            tf_sec    = self.strategy_tf * 60
-            day_start = (ts // 86400) * 86400
-            anchor    = day_start + self._session_start_utc_secs
-            elapsed   = ts - anchor
-            if elapsed < 0:
-                sb = (ts // tf_sec) * tf_sec   # pre-session fallback
-            else:
-                sb = anchor + (elapsed // tf_sec) * tf_sec
-
         is_new_session = False
         if self.last_1m_bucket is None:
             is_new_session = True
@@ -166,6 +150,15 @@ class HAStaticTriggerStrategy:
                 is_new_session = True
 
         self.last_1m_bucket = ts
+        # Session-anchor aligned bucket — matches exchange boundaries exactly
+        if self.strategy_tf <= 1:
+            sb = ts - (ts % 60)
+        else:
+            tf_sec    = self.strategy_tf * 60
+            day_start = (ts // 86400) * 86400
+            anchor    = day_start + self._session_start_utc_secs
+            elapsed   = ts - anchor
+            sb = anchor + (elapsed // tf_sec) * tf_sec if elapsed >= 0 else (ts // tf_sec) * tf_sec
 
         if self.agg_current is None:
             self.agg_current = {
@@ -180,19 +173,11 @@ class HAStaticTriggerStrategy:
         cur_bucket = int(self.agg_current["bucket"])
 
         if is_new_session and ts != cur_bucket:
-            # Push yesterday's incomplete forming candle into agg_completed
-            # so it becomes the "carry" candle for cross-day HH/LL check.
             finalized = dict(self.agg_current)
             self.agg_completed.append(finalized)
-
-            if self.variation == "two_consecutive":
-                # Do NOT arm a trigger yet. We need today's first candle to
-                # close before checking HH/LL. Clear any stale pending and wait.
-                self._cancel_pending("New session: waiting for today's first candle (two_consecutive)")
-            else:
-                # For other variations: run normal rebuild (ha_static etc.)
-                self._rebuild_and_update_pending()
-
+            # Both ha_static and two_consecutive: do NOT arm trigger from yesterday's
+            # candles. Wait for today's first candle to close, then check entry conditions.
+            self._cancel_pending("New session: waiting for today's first candle to close")
             self.agg_current = {
                 "bucket": sb,
                 "open": float(row_1m["open"]),

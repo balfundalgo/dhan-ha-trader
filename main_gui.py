@@ -35,22 +35,22 @@ def _save_env_key(key, value):
     os.environ[key]=value
 
 # ── Palette ───────────────────────────────────────────────────────────────────
-DARK_BG    = "#f0f4f8"   # light page background
-PANEL_BG   = "#ffffff"   # white panels
-CARD_BG    = "#dbeafe"   # light blue cards
-ACCENT     = "#1d4ed8"   # strong blue
-ACCENT_H   = "#1e3a8a"   # dark blue hover
-RED_COL    = "#dc2626"   # red stop/error
-RED_H      = "#991b1b"
-ORANGE_COL = "#b45309"   # amber warnings
-CYAN_COL   = "#1d4ed8"   # blue headings
-WHITE_COL  = "#111827"   # near-black main text
-GREY_COL   = "#1f2937"   # dark grey secondary text
-BORDER     = "#93c5fd"   # light blue border
-LIVE_COL   = "#dc2626"   # red live mode
+DARK_BG    = "#0d1117"   # dark page background
+PANEL_BG   = "#161b22"   # dark panels
+CARD_BG    = "#21262d"   # dark cards
+ACCENT     = "#238636"   # green accent
+ACCENT_H   = "#2ea043"   # green hover
+RED_COL    = "#da3633"   # red stop/error
+RED_H      = "#b91c1c"
+ORANGE_COL = "#d29922"   # amber warnings
+CYAN_COL   = "#58a6ff"   # cyan headings
+WHITE_COL  = "#e6edf3"   # light text
+GREY_COL   = "#8b949e"   # grey secondary text
+BORDER     = "#30363d"   # dark border
+LIVE_COL   = "#f85149"   # red live mode
 F_TITLE=("Segoe UI",20,"bold"); F_HEAD=("Segoe UI",15,"bold")
-F_LABEL=("Segoe UI",13,"bold"); F_BTN=("Segoe UI",13,"bold")
-F_MONO=("Consolas",12); F_MONO_S=("Consolas",11); F_SMALL=("Segoe UI",11,"bold")
+F_LABEL=("Segoe UI",13); F_BTN=("Segoe UI",13,"bold")
+F_MONO=("Consolas",12); F_MONO_S=("Consolas",11); F_SMALL=("Segoe UI",11)
 
 ALL_SYMBOLS=["CRUDEOILM","GOLDPETAL","SILVERMIC"]
 TF_OPTIONS=["1m","3m","5m","7m","9m","45m","65m","130m"]
@@ -64,8 +64,8 @@ VARIATION_LABELS={
 KC_VARIATIONS={"keltner","rsi_keltner"}; RSI_VARIATIONS={"rsi_keltner"}
 ORDER_TYPES=["MARKET","SL-M","LIMIT"]
 SYM_BUF_DEFAULTS={"CRUDEOILM":"3.0","GOLDPETAL":"10.0","SILVERMIC":"10.0"}
-ctk.set_appearance_mode("light")
-ctk.set_default_color_theme("blue")
+ctk.set_appearance_mode("dark")
+ctk.set_default_color_theme("dark-blue")
 
 
 class TokenTab(ctk.CTkFrame):
@@ -248,10 +248,10 @@ class StrategyTab(ctk.CTkFrame):
         ctk.CTkButton(btn_row,text="💾  Save Settings",width=160,height=38,fg_color=CARD_BG,hover_color=BORDER,text_color=CYAN_COL,font=F_BTN,command=self._save_settings).pack(side="left",padx=8)
         self.info_lbl=ctk.CTkLabel(btn_row,text="",font=F_SMALL,text_color=GREY_COL); self.info_lbl.pack(side="left",padx=8)
 
-        self.dash=ctk.CTkTextbox(self,font=F_MONO,fg_color=PANEL_BG,text_color=WHITE_COL,border_color=BORDER,border_width=2,wrap="none")
+        self.dash=ctk.CTkTextbox(self,font=F_MONO,fg_color=PANEL_BG,text_color=WHITE_COL,border_color=BORDER,border_width=1,wrap="none")
         self.dash.pack(fill="both",expand=True,padx=14,pady=(0,6)); self.dash.configure(state="disabled")
         ctk.CTkLabel(self,text="Event Log",anchor="w",font=("Segoe UI",12,"bold"),text_color=GREY_COL).pack(padx=14,anchor="w")
-        self.event_log=ctk.CTkTextbox(self,height=110,font=F_MONO_S,fg_color=CARD_BG,text_color=WHITE_COL,border_color=BORDER,border_width=2)
+        self.event_log=ctk.CTkTextbox(self,height=110,font=F_MONO_S,fg_color=PANEL_BG,text_color=WHITE_COL,border_color=BORDER,border_width=1)
         self.event_log.pack(fill="x",padx=14,pady=(2,12)); self.event_log.configure(state="disabled")
 
     def _collect_settings(self):
@@ -470,11 +470,11 @@ class MainApp(ctk.CTk):
         self.geometry("1450x980"); self.minsize(1150,780); self.configure(fg_color=DARK_BG); self._build()
 
     def _build(self):
-        hdr=ctk.CTkFrame(self,fg_color=ACCENT,corner_radius=0,height=52); hdr.pack(fill="x"); hdr.pack_propagate(False)
-        ctk.CTkLabel(hdr,text="  BALFUND TRADING PVT. LTD.  |  Dhan HA Trader",font=("Segoe UI",14,"bold"),text_color="#ffffff").pack(side="left",padx=18)
-        ctk.CTkLabel(hdr,text="Paper & Live Trading — Use Live Mode with caution",font=F_SMALL,text_color="#bfdbfe").pack(side="right",padx=18)
-        tabs=ctk.CTkTabview(self,fg_color=DARK_BG,segmented_button_fg_color=CARD_BG,
-            segmented_button_selected_color=ACCENT,segmented_button_unselected_color=CARD_BG,
+        hdr=ctk.CTkFrame(self,fg_color=PANEL_BG,corner_radius=0,height=52); hdr.pack(fill="x"); hdr.pack_propagate(False)
+        ctk.CTkLabel(hdr,text="  BALFUND TRADING PVT. LTD.  |  Dhan HA Trader",font=("Segoe UI",14,"bold"),text_color=CYAN_COL).pack(side="left",padx=18)
+        ctk.CTkLabel(hdr,text="Paper & Live Trading — Use Live Mode with caution",font=F_SMALL,text_color=GREY_COL).pack(side="right",padx=18)
+        tabs=ctk.CTkTabview(self,fg_color=DARK_BG,segmented_button_fg_color=PANEL_BG,
+            segmented_button_selected_color=ACCENT,segmented_button_unselected_color=PANEL_BG,
             segmented_button_selected_hover_color=ACCENT_H,text_color=WHITE_COL)
         tabs.pack(fill="both",expand=True)
         tabs.add("🔑  Token Manager"); tabs.add("📈  Live Strategy")

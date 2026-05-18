@@ -1,3 +1,47 @@
+"""
+=============================================================================
+Dhan HA Trader  |  Standalone CLI  (v9)
+=============================================================================
+Run directly in VS Code / terminal:
+
+    python main.py                           ← uses CONFIG block below
+    python main.py --tf 45 --variation two_consecutive
+    python main.py --tf 65 --variation ha_static --symbols crude
+    python main.py --tf 45 --variation two_consecutive --live
+
+Credentials: fill in .env file next to this script.
+=============================================================================
+"""
+
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║  CONFIG — edit these and click ▶ Play in VS Code                        ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+TF_MINUTES   = 1            # 1 / 3 / 5 / 7 / 9 / 45 / 65 / 130
+VARIATION    = "two_consecutive"  # ha_static | two_consecutive | keltner | rsi_keltner
+SYMBOLS      = "all"        # all | crude | gold | silver | CRUDEOILM,GOLDPETAL
+LIVE_MODE    = False        # False = paper trading | True = real orders (use with caution!)
+ORDER_TYPE   = "MARKET"     # MARKET | SL-M | LIMIT
+TRIGGER_OFFSET = 0.0        # pts added to signal price for SL-M trigger
+LIMIT_OFFSET   = 0.0        # pts added to signal price for LIMIT order
+GLOBAL_SL_PCT  = 0.0        # % of account balance (0 = disabled)
+MCX_END_TIME   = "23:30"    # IST HH:MM — 23:30 during DST, 23:55 normal
+
+# Per-symbol buffer overrides (None = use default from BUFFER_MAP)
+BUF_CRUDEOILM = None        # e.g. 3.0
+BUF_GOLDPETAL = None        # e.g. 10.0
+BUF_SILVERMIC = None        # e.g. 10.0
+
+# KC / RSI params (only used for keltner / rsi_keltner variations)
+KC_LENGTH     = 21
+KC_ATR_LENGTH = 21
+KC_MULT       = 0.5
+RSI_LENGTH    = 14
+RSI_BUY       = 52.0
+RSI_SELL      = 32.0
+
+# ══════════════════════════════════════════════════════════════════════════
+
 import os
 import sys
 import time
@@ -17,25 +61,32 @@ from strategy_ha_static import HAStaticTriggerStrategy, SUPPORTED_VARIATIONS
 from paper_engine import PaperTradeEngine
 from dashboard import print_dashboard
 
-if getattr(sys, 'frozen', False):
-    BASE_DIR = Path(sys.executable).parent
-else:
-    BASE_DIR = Path(__file__).resolve().parent
-
+# ── Base directory ────────────────────────────────────────────────────────────
+BASE_DIR = Path(__file__).resolve().parent
 ENV_FILE = BASE_DIR / ".env"
 load_dotenv(dotenv_path=ENV_FILE, override=True)
 
 DHAN_CLIENT_ID    = os.getenv("DHAN_CLIENT_ID", "").strip()
 DHAN_ACCESS_TOKEN = os.getenv("DHAN_ACCESS_TOKEN", "").strip()
 
-SYMBOL_PRESETS = {"all": None, "crude": ["CRUDEOILM"],
-                  "gold": ["GOLDPETAL"], "silver": ["SILVERMIC"]}
-ORDER_TYPE_MAP = {"MARKET": "MARKET", "SL-M": "STOP_LOSS_MARKET", "LIMIT": "LIMIT"}
+SYMBOL_PRESETS = {
+    "all":    None,
+    "crude":  ["CRUDEOILM"],
+    "gold":   ["GOLDPETAL"],
+    "silver": ["SILVERMIC"],
+}
+
+ORDER_TYPE_MAP = {
+    "MARKET": "MARKET",
+    "SL-M":   "STOP_LOSS_MARKET",
+    "LIMIT":  "LIMIT",
+}
+
 MCX_SESSION_END_DEFAULT = (23, 30)
 DHAN_FUNDS_URL = "https://api.dhan.co/v2/fundlimit"
 
 
-def fetch_account_balance(client_id, access_token):
+def fetch_account_balance(client_id: str, access_token: str) -> float:
     try:
         import requests as _req
         r = _req.get(DHAN_FUNDS_URL,
@@ -50,21 +101,42 @@ def fetch_account_balance(client_id, access_token):
     return 0.0
 
 
+# ═════════════════════════════════════════════════════════════════════════════
 class TradingApp:
-    def __init__(self, strategy_tf, symbols_filter=None, squareoff_symbols=None,
-                 variation="ha_static", rsi_length=14, rsi_buy_level=52.0,
-                 rsi_sell_level=32.0, kc_length=21, kc_atr_length=21,
-                 kc_multiplier=0.5, buffer_overrides=None, lot_size_overrides=None,
-                 live_mode=False, order_type="MARKET", trigger_offset=0.0,
-                 limit_offset=0.0, global_sl_pct=0.0,
-                 mcx_session_end=MCX_SESSION_END_DEFAULT,
-                 client_id="", access_token=""):
+# ═════════════════════════════════════════════════════════════════════════════
+
+    def __init__(
+        self,
+        strategy_tf: int,
+        symbols_filter=None,
+        squareoff_symbols=None,
+        variation: str = "ha_static",
+        rsi_length: int = 14,
+        rsi_buy_level: float = 52.0,
+        rsi_sell_level: float = 32.0,
+        kc_length: int = 21,
+        kc_atr_length: int = 21,
+        kc_multiplier: float = 0.5,
+        buffer_overrides: dict = None,
+        lot_size_overrides: dict = None,
+        live_mode: bool = False,
+        order_type: str = "MARKET",
+        trigger_offset: float = 0.0,
+        limit_offset: float = 0.0,
+        global_sl_pct: float = 0.0,
+        mcx_session_end: tuple = MCX_SESSION_END_DEFAULT,
+        client_id: str = "",
+        access_token: str = "",
+    ):
         global DHAN_CLIENT_ID, DHAN_ACCESS_TOKEN
+
         load_dotenv(dotenv_path=ENV_FILE, override=True)
         DHAN_CLIENT_ID    = os.getenv("DHAN_CLIENT_ID", "").strip()
         DHAN_ACCESS_TOKEN = os.getenv("DHAN_ACCESS_TOKEN", "").strip()
         if client_id:    DHAN_CLIENT_ID    = str(client_id).strip()
         if access_token: DHAN_ACCESS_TOKEN = str(access_token).strip()
+
+        # Fallback: shared token from dhan-token-generator
         if not DHAN_ACCESS_TOKEN:
             try:
                 from dhan_token_manager import read_shared_token
@@ -73,8 +145,11 @@ class TradingApp:
                 if not DHAN_CLIENT_ID and s.get("client_id"): DHAN_CLIENT_ID = s["client_id"]
             except Exception:
                 pass
+
         if not DHAN_CLIENT_ID or not DHAN_ACCESS_TOKEN:
-            raise RuntimeError("Missing DHAN credentials — please generate a token first.")
+            raise RuntimeError(
+                "Missing DHAN credentials.\n"
+                "Please fill DHAN_CLIENT_ID and DHAN_ACCESS_TOKEN in your .env file.")
 
         self.strategy_tf     = int(strategy_tf)
         self.variation       = str(variation).strip().lower()
@@ -96,23 +171,26 @@ class TradingApp:
         self.global_sl_hit   = False
         self.mcx_session_end = tuple(mcx_session_end)
 
-        self.project_dir = BASE_DIR
-        self.state_path  = BASE_DIR / "paper_state.json"
-
-        # Date-stamped daily log and trade files
+        # Date-stamped daily log and trade files — one per symbol
+        # Created after instruments are resolved, stored in self._sym_log_paths
         today      = __import__("datetime").date.today().strftime("%Y-%m-%d")
-        logs_dir   = BASE_DIR / "logs"
-        trades_dir = BASE_DIR / "trades"
-        logs_dir.mkdir(exist_ok=True)
-        trades_dir.mkdir(exist_ok=True)
-        self.log_path       = logs_dir   / f"{today}.log"
-        self.trade_log_path = trades_dir / f"{today}.csv"
+        self._today = today
+        self.logs_dir   = BASE_DIR / "logs"
+        self.trades_dir = BASE_DIR / "trades"
+        self.logs_dir.mkdir(exist_ok=True)
+        self.trades_dir.mkdir(exist_ok=True)
+        # Main app log (startup, errors, general events)
+        self.log_path   = self.logs_dir / f"app_{today}.log"
+        self.state_path = BASE_DIR / "paper_state.json"
 
         self._setup_logging()
-        self.logger.info("Mode=%s | TF=%dm | Variation=%s | OrderType=%s | GSL=%.1f%%",
-            "LIVE" if self.live_mode else "PAPER", self.strategy_tf,
-            self.variation, self.order_type, self.global_sl_pct)
+        self.logger.info(
+            "Mode=%s | TF=%dm | Variation=%s | OrderType=%s | GSL=%.1f%% | MCXEnd=%02d:%02d",
+            "LIVE" if self.live_mode else "PAPER", self.strategy_tf, self.variation,
+            self.order_type, self.global_sl_pct,
+            self.mcx_session_end[0], self.mcx_session_end[1])
 
+        # Live order engine
         self.live_engine = None
         if self.live_mode:
             from live_order_engine import LiveOrderEngine
@@ -120,6 +198,7 @@ class TradingApp:
                 client_id=DHAN_CLIENT_ID, access_token=DHAN_ACCESS_TOKEN,
                 logger=self.logger)
 
+        # Global SL
         if self.global_sl_pct > 0:
             bal = fetch_account_balance(DHAN_CLIENT_ID, DHAN_ACCESS_TOKEN)
             if bal > 0:
@@ -127,12 +206,15 @@ class TradingApp:
                 self.logger.info("Global SL: %.1f%% of ₹%.2f = ₹%.2f",
                                  self.global_sl_pct, bal, self.global_sl_rupees)
 
+        # Instruments
         self.instruments = build_instrument_list(
             symbol_filter=symbols_filter, logger=self.logger)
         if not self.instruments:
-            raise RuntimeError("No instruments resolved.")
+            raise RuntimeError("No instruments resolved. Check symbol names / instrument master.")
+
         for inst in self.instruments:
-            self.logger.info("Instrument: %s [%s] secId=%s lot=%s contract=%s",
+            self.logger.info(
+                "Instrument: %s [%s] secId=%s lot=%s contract=%s",
                 inst["name"], inst["exchange"], inst["security_id"],
                 inst.get("lot_size", 1), inst.get("contract_display", ""))
 
@@ -146,16 +228,19 @@ class TradingApp:
             sym_name = inst["name"].upper()
             sym_buf  = self.buffer_overrides.get(sym_name)
             sym_lot  = self.lot_size_overrides.get(sym_name, inst.get("lot_size", 1))
+
             self.strategies[sec] = HAStaticTriggerStrategy(
                 inst["name"], self.strategy_tf,
-                variation=self.variation, rsi_length=self.rsi_length,
-                rsi_buy_level=self.rsi_buy_level, rsi_sell_level=self.rsi_sell_level,
-                kc_length=self.kc_length, kc_atr_length=self.kc_atr_length,
-                kc_multiplier=self.kc_multiplier, buffer_override=sym_buf,
-                exchange=inst.get("exchange", ""))
+                variation=self.variation,
+                rsi_length=self.rsi_length, rsi_buy_level=self.rsi_buy_level,
+                rsi_sell_level=self.rsi_sell_level, kc_length=self.kc_length,
+                kc_atr_length=self.kc_atr_length, kc_multiplier=self.kc_multiplier,
+                buffer_override=sym_buf, exchange=inst.get("exchange", ""))
+
             self.paper[sec] = PaperTradeEngine(
                 sym_lot, inst.get("display_prec", 2),
-                event_callback=self._on_trade_event, symbol_name=inst["name"])
+                event_callback=self._on_trade_event,
+                symbol_name=inst["name"])
 
         self.market = MarketDataEngine(
             client_id=DHAN_CLIENT_ID, access_token=DHAN_ACCESS_TOKEN,
@@ -174,30 +259,56 @@ class TradingApp:
         self.state_restored = self._load_state()
         if not self.state_restored:
             self._reset_actionable_state_after_backfill()
-        self.logger.info("Startup complete. REST poller armed.")
+        self.logger.info("Startup complete. REST poller armed, trading live.")
         self._apply_startup_squareoff()
         self._save_state()
 
-    # ── Logging ──────────────────────────────────────────────────────────────
+    # ── Logging ───────────────────────────────────────────────────────────────
     def _setup_logging(self):
         self.logger = logging.getLogger(f"dhan_ha_{id(self)}")
         self.logger.setLevel(logging.INFO)
         self.logger.handlers.clear()
+
+        # Daily rotating file handler — app-level log
         fh = logging.handlers.TimedRotatingFileHandler(
             self.log_path, when="midnight", interval=1,
             backupCount=30, encoding="utf-8", utc=False)
         fh.suffix = "%Y-%m-%d"
         fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
         self.logger.addHandler(fh)
+
+        # Console output for VS Code terminal
+        ch = logging.StreamHandler(sys.stdout)
+        ch.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+        ch.setLevel(logging.INFO)
+        self.logger.addHandler(ch)
+
         self.logger.propagate = False
         self.logger.info("==== App start ==== log=%s", self.log_path)
 
-    # ── Trade log ─────────────────────────────────────────────────────────────
-    def _get_todays_trade_log(self) -> Path:
+    def _get_symbol_logger(self, sym_name: str) -> logging.Logger:
+        """Return (creating if needed) a per-symbol daily rotating logger."""
+        log_name = f"dhan_ha_{sym_name}_{id(self)}"
+        sym_logger = logging.getLogger(log_name)
+        if sym_logger.handlers:
+            return sym_logger   # already set up
+        sym_logger.setLevel(logging.INFO)
+        sym_log_path = self.logs_dir / f"{sym_name}_{self._today}.log"
+        fh = logging.handlers.TimedRotatingFileHandler(
+            sym_log_path, when="midnight", interval=1,
+            backupCount=30, encoding="utf-8", utc=False)
+        fh.suffix = "%Y-%m-%d"
+        fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+        sym_logger.addHandler(fh)
+        sym_logger.propagate = False
+        return sym_logger
+
+    # ── Trade log — per symbol ────────────────────────────────────────────────
+    def _get_todays_trade_log(self, sym_name: str) -> Path:
+        """Return today's trade CSV path for a specific symbol, creating header if new."""
         today = __import__("datetime").date.today().strftime("%Y-%m-%d")
-        trades_dir = BASE_DIR / "trades"
-        trades_dir.mkdir(exist_ok=True)
-        path = trades_dir / f"{today}.csv"
+        self.trades_dir.mkdir(exist_ok=True)
+        path = self.trades_dir / f"{sym_name}_{today}.csv"
         if not path.exists():
             with path.open("w", newline="", encoding="utf-8") as f:
                 csv.writer(f).writerow([
@@ -209,7 +320,8 @@ class TradingApp:
         return path
 
     def _ensure_trade_log_header(self):
-        self._get_todays_trade_log()
+        # Headers created lazily per symbol on first trade — nothing to do here
+        pass
 
     def _append_trade_log(self, payload):
         import datetime as _dt
@@ -218,8 +330,17 @@ class TradingApp:
             try: return _dt.datetime.fromtimestamp(int(epoch)).strftime("%Y-%m-%d %H:%M:%S")
             except: return str(epoch)
 
-        is_open = payload.get("event_type", "").startswith("OPEN")
-        path = self._get_todays_trade_log()
+        sym_name = str(payload.get("symbol", "UNKNOWN")).upper()
+        is_open  = payload.get("event_type", "").startswith("OPEN")
+        path     = self._get_todays_trade_log(sym_name)
+
+        # Also write to per-symbol logger
+        sym_logger = self._get_symbol_logger(sym_name)
+        sym_logger.info("TRADE %s | price=%s | pnl=%s",
+                        payload.get("event_type"),
+                        payload.get("entry_price") or payload.get("exit_price"),
+                        payload.get("closed_pnl") or "-")
+
         with path.open("a", newline="", encoding="utf-8") as f:
             csv.writer(f).writerow([
                 _fmt(payload.get("ts")),
@@ -265,11 +386,13 @@ class TradingApp:
         except Exception as e:
             self.logger.warning("State save failed: %s", e)
 
-    def _load_state(self):
-        if not self.state_path.exists(): return False
+    def _load_state(self) -> bool:
+        if not self.state_path.exists():
+            return False
         try:
             data = json.loads(self.state_path.read_text())
-        except Exception: return False
+        except Exception:
+            return False
         if int(data.get("strategy_tf", 0)) != self.strategy_tf: return False
         if str(data.get("variation", "")).lower() != self.variation: return False
         restored = 0
@@ -309,22 +432,17 @@ class TradingApp:
             p = self.paper[sec]
             p.position_side = None; p.entry_price = None; p.entry_ts = None
 
-            if s.variation == "two_consecutive":
-                # Do NOT arm pending from backfill history for two_consecutive.
-                # We need today's first live candle to close and pair with
-                # yesterday's last candle before checking HH/LL.
-                s.pending_side    = None
-                s.pending_trigger = None
-                s.pending_from_bucket = None
-                s.last_event = "Startup: waiting for today's first candle to close..."
-            else:
-                # For other variations: re-arm pending from last completed candles
-                s._rebuild_and_update_pending()
-                if s.pending_side:
-                    self.logger.info("Startup: %s pending %s @ %.4f",
-                        self.sec_to_inst[sec]["name"], s.pending_side, s.pending_trigger or 0)
-                else:
-                    s.last_event = "Startup: watching..."
+            # For ALL variations: do NOT arm pending from backfill history.
+            # Wait for today's first live candle to close before checking entry.
+            # This prevents entering a trade on yesterday's last candle signal
+            # before today's first candle has even formed.
+            # Exception: if state was restored (existing position), skip this.
+            s.pending_side    = None
+            s.pending_trigger = None
+            s.pending_from_bucket = None
+            s.last_event = "Startup: waiting for today's first candle to close..."
+            self.logger.info("Startup: %s — waiting for first live candle",
+                             self.sec_to_inst[sec]["name"])
 
     # ── Square off ────────────────────────────────────────────────────────────
     def _apply_startup_squareoff(self):
@@ -332,8 +450,7 @@ class TradingApp:
         for sec, inst in self.sec_to_inst.items():
             if "ALL" not in self.squareoff_symbols and inst["name"].upper() not in self.squareoff_symbols: continue
             snap = self.market.engines[sec].snapshot()
-            ltp  = snap["ltp"]
-            ts   = snap["ltt_epoch"] or int(time.time())
+            ltp  = snap["ltp"]; ts = snap["ltt_epoch"] or int(time.time())
             if ltp is None or self.paper[sec].position_side is None: continue
             self.paper[sec].square_off(float(ltp), int(ts))
             self.strategies[sec].clear_trade_tracking(None)
@@ -342,8 +459,7 @@ class TradingApp:
     def square_off_all(self):
         for sec, inst in self.sec_to_inst.items():
             if self.paper[sec].position_side is None: continue
-            snap = self.market.engines[sec].snapshot()
-            ltp  = snap["ltp"]
+            snap = self.market.engines[sec].snapshot(); ltp = snap["ltp"]
             if ltp is None: continue
             if self.live_mode and self.live_engine:
                 side = "SELL" if self.paper[sec].position_side == "LONG" else "BUY"
@@ -374,7 +490,7 @@ class TradingApp:
                     total_pnl += float(paper["realized_pnl"]) + float(paper["unrealized_pnl"])
                 if total_pnl <= -abs(self.global_sl_rupees):
                     self.global_sl_hit = True
-                    self.logger.warning("GLOBAL SL HIT: P&L ₹%.2f. Squaring off all.", total_pnl)
+                    self.logger.warning("GLOBAL SL HIT: P&L ₹%.2f. Squaring off.", total_pnl)
                     self.square_off_all()
                     for sec in self.sec_to_inst:
                         self.strategies[sec].pending_side    = None
@@ -397,8 +513,7 @@ class TradingApp:
             engine = self.market.engines[sec]
             with engine.lock:
                 current = engine.current
-                if current is None:
-                    self._mcx_session_closed_today.add(key); continue
+                if current is None: self._mcx_session_closed_today.add(key); continue
                 fake_row = {k: current[k] for k in ("bucket","open","high","low","close")}
                 fake_row["tick_count"] = int(current.get("tick_count", 1))
             self._mcx_session_closed_today.add(key)
@@ -410,7 +525,7 @@ class TradingApp:
     # ── Signal execution ──────────────────────────────────────────────────────
     def _compute_order_prices(self, side, signal_price):
         is_buy = side.upper() == "BUY"
-        if self.order_type == "MARKET":   return 0.0, 0.0
+        if self.order_type == "MARKET":  return 0.0, 0.0
         elif self.order_type == "SL-M":
             trig = signal_price + self.trigger_offset if is_buy else signal_price - self.trigger_offset
             return 0.0, trig
@@ -427,6 +542,7 @@ class TradingApp:
         quantity     = self.paper[sec].lot_size
         dhan_type    = ORDER_TYPE_MAP.get(self.order_type, "MARKET")
         order_price, trigger_price = self._compute_order_prices(side, signal_price)
+
         if self.live_mode and self.live_engine:
             def _on_fill(fp, oid, _sec=sec, _sig=sig):
                 filled = dict(_sig); filled["price"] = fp
@@ -450,8 +566,7 @@ class TradingApp:
     def _handle_strategy_exit_if_any(self, sec, fallback_ts):
         exit_sig = self.strategies[sec].check_stoploss_exit()
         if not exit_sig: return
-        paper = self.paper[sec]
-        inst  = self.sec_to_inst[sec]
+        paper = self.paper[sec]; inst = self.sec_to_inst[sec]
         side_match = ((exit_sig["exit_side"]=="LONG" and paper.position_side=="LONG") or
                       (exit_sig["exit_side"]=="SHORT" and paper.position_side=="SHORT"))
         if not side_match: return
@@ -459,8 +574,7 @@ class TradingApp:
         if self.live_mode and self.live_engine:
             def _on_sl(fp, oid, _sec=sec):
                 self.paper[_sec].square_off(fp, int(time.time()))
-                self.strategies[_sec].clear_trade_tracking(None)
-                self._save_state()
+                self.strategies[_sec].clear_trade_tracking(None); self._save_state()
             self.live_engine.execute_with_fallback(
                 close_side, inst["security_id"], inst["exchange"],
                 paper.lot_size, "MARKET", on_fill=_on_sl)
@@ -490,17 +604,29 @@ class TradingApp:
     # ── Lifecycle ─────────────────────────────────────────────────────────────
     def _run_ui(self):
         while not self.stop_event.is_set():
-            try: print_dashboard(self)
-            except Exception as e: self.logger.warning("UI error: %s", e)
+            try:
+                print_dashboard(self)
+            except Exception as e:
+                self.logger.warning("Dashboard error: %s", e)
             time.sleep(1)
 
-    def start(self, with_terminal_ui=True):
+    def start(self, with_terminal_ui: bool = True):
         self.market.start()
         if self.global_sl_rupees > 0:
-            self._gsl_thread = threading.Thread(target=self._global_sl_monitor, daemon=True)
+            self._gsl_thread = threading.Thread(
+                target=self._global_sl_monitor, daemon=True)
             self._gsl_thread.start()
         if with_terminal_ui:
-            print(f"TF={self.strategy_tf}m | {self.variation} | {'LIVE' if self.live_mode else 'PAPER'}")
+            mode = "LIVE" if self.live_mode else "PAPER"
+            print(f"\n{'='*60}")
+            print(f"  Dhan HA Trader  |  {mode}")
+            print(f"  TF={self.strategy_tf}m  |  Variation={self.variation}  |  OrderType={self.order_type}")
+            print(f"  MCX Session End: {self.mcx_session_end[0]:02d}:{self.mcx_session_end[1]:02d}  |  Global SL: {self.global_sl_pct}%")
+            for x in self.instruments:
+                buf = self.strategies[str(x["security_id"])].buffer
+                lot = self.paper[str(x["security_id"])].lot_size
+                print(f"  {x['name']:<12} lot={lot}  buf={buf}  contract={x.get('contract_display','')}")
+            print(f"{'='*60}\n")
             time.sleep(1)
             self.ui_thread = threading.Thread(target=self._run_ui, daemon=True)
             self.ui_thread.start()
@@ -511,8 +637,8 @@ class TradingApp:
         self.market.stop()
         self.logger.info("==== App stop ====")
 
-    # ── Snapshot ──────────────────────────────────────────────────────────────
-    def get_snapshot(self):
+    # ── Snapshot (for dashboard) ───────────────────────────────────────────────
+    def get_snapshot(self) -> dict:
         result = {
             "strategy_tf": self.strategy_tf, "variation": self.variation,
             "live_mode": self.live_mode, "order_type": self.order_type,
@@ -527,6 +653,7 @@ class TradingApp:
         if ct: result["ws_uptime"] = f"{int(time.time()-ct)}s"
         result["packets"]  = ms["packet_counts"]
         result["ws_error"] = ms["last_ws_error"]
+
         for sec, inst in self.sec_to_inst.items():
             base  = self.market.engines[sec].snapshot()
             strat = self.strategies[sec].snapshot()
@@ -557,30 +684,169 @@ class TradingApp:
         return result
 
 
+# ═════════════════════════════════════════════════════════════════════════════
+#  CLI ENTRY POINT
+# ═════════════════════════════════════════════════════════════════════════════
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Dhan HA Trader — Paper/Live Strategy",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python main.py --tf 45 --variation two_consecutive
+  python main.py --tf 65 --variation ha_static --symbols crude
+  python main.py --tf 9  --variation two_consecutive --symbols crude,silver
+  python main.py --tf 45 --variation two_consecutive --live --order-type MARKET
+  python main.py --tf 45 --variation two_consecutive --global-sl-pct 2.0
+        """
+    )
+    parser.add_argument("--tf", type=int, default=65,
+                        choices=[1, 3, 5, 7, 9, 45, 65, 130],
+                        help="Timeframe in minutes (default: 65)")
+    parser.add_argument("--symbols", type=str, default="all",
+                        help="all | crude | gold | silver | CRUDEOILM,GOLDPETAL (default: all)")
+    parser.add_argument("--variation", type=str, default="ha_static",
+                        choices=sorted(SUPPORTED_VARIATIONS),
+                        help="Strategy variation (default: ha_static)")
+    parser.add_argument("--live", action="store_true",
+                        help="Enable live trading (default: paper mode)")
+    parser.add_argument("--order-type", type=str, default="MARKET",
+                        choices=["MARKET", "SL-M", "LIMIT"],
+                        help="Order type (default: MARKET)")
+    parser.add_argument("--trigger-offset", type=float, default=0.0,
+                        help="Trigger offset in pts for SL-M orders")
+    parser.add_argument("--limit-offset", type=float, default=0.0,
+                        help="Limit offset in pts for LIMIT orders")
+    parser.add_argument("--global-sl-pct", type=float, default=0.0,
+                        help="Global SL as %% of account balance (e.g. 2.0)")
+    parser.add_argument("--mcx-end", type=str, default="23:30",
+                        help="MCX session end time IST HH:MM (default: 23:30 DST / 23:55 normal)")
+    parser.add_argument("--buf-crude", type=float, default=None, help="Buffer override for CRUDEOILM")
+    parser.add_argument("--buf-gold",  type=float, default=None, help="Buffer override for GOLDPETAL")
+    parser.add_argument("--buf-silver",type=float, default=None, help="Buffer override for SILVERMIC")
+    parser.add_argument("--kc-length",    type=int,   default=21)
+    parser.add_argument("--kc-atr-length",type=int,   default=21)
+    parser.add_argument("--kc-mult",      type=float, default=0.5)
+    parser.add_argument("--rsi-length",   type=int,   default=14)
+    parser.add_argument("--rsi-buy",      type=float, default=52.0)
+    parser.add_argument("--rsi-sell",     type=float, default=32.0)
+    return parser.parse_args()
+
+
 def main():
     if not DHAN_CLIENT_ID or not DHAN_ACCESS_TOKEN:
-        raise SystemExit("Missing DHAN_CLIENT_ID / DHAN_ACCESS_TOKEN in .env")
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--tf",       type=int, default=65, choices=[1,3,5,7,9,45,65,130])
-    parser.add_argument("--symbols",  type=str, default="all")
-    parser.add_argument("--variation",type=str, default="ha_static", choices=sorted(SUPPORTED_VARIATIONS))
-    parser.add_argument("--live",     action="store_true")
-    parser.add_argument("--order-type",type=str,default="MARKET",choices=["MARKET","SL-M","LIMIT"])
-    parser.add_argument("--global-sl-pct",type=float,default=0.0)
-    args = parser.parse_args()
-    sym_key = args.symbols.strip().lower()
-    sym_filter = SYMBOL_PRESETS.get(sym_key) if sym_key in SYMBOL_PRESETS else \
-                 [x.strip().upper() for x in args.symbols.split(",") if x.strip()]
-    app = TradingApp(strategy_tf=args.tf, symbols_filter=sym_filter,
-                     variation=args.variation, live_mode=args.live,
-                     order_type=args.order_type, global_sl_pct=args.global_sl_pct)
-    def _sig(s, f): app.stop(); raise SystemExit(0)
-    signal.signal(signal.SIGINT, _sig); signal.signal(signal.SIGTERM, _sig)
-    app.start(with_terminal_ui=True)
+        print("\n❌  Missing credentials!")
+        print("    Create a .env file in this folder with:")
+        print("    DHAN_CLIENT_ID=your_client_id")
+        print("    DHAN_ACCESS_TOKEN=your_token\n")
+        raise SystemExit(1)
+
+    # If no CLI args provided (e.g. VS Code Play button), use CONFIG block above.
+    # If CLI args are passed, they override the CONFIG block.
+    use_cli = len(sys.argv) > 1
+
+    if use_cli:
+        args = parse_args()
+        tf_val         = args.tf
+        variation_val  = args.variation
+        symbols_val    = args.symbols
+        live_val       = args.live
+        order_type_val = args.order_type
+        trig_off_val   = args.trigger_offset
+        lmt_off_val    = args.limit_offset
+        gsl_val        = args.global_sl_pct
+        mcx_end_str    = args.mcx_end
+        buf_crude      = args.buf_crude
+        buf_gold       = args.buf_gold
+        buf_silver     = args.buf_silver
+        kc_len         = args.kc_length
+        kc_atr         = args.kc_atr_length
+        kc_mult        = args.kc_mult
+        rsi_len        = args.rsi_length
+        rsi_buy        = args.rsi_buy
+        rsi_sell       = args.rsi_sell
+    else:
+        # ── Using CONFIG block (VS Code Play button) ──────────────────────
+        tf_val         = TF_MINUTES
+        variation_val  = VARIATION
+        symbols_val    = SYMBOLS
+        live_val       = LIVE_MODE
+        order_type_val = ORDER_TYPE
+        trig_off_val   = TRIGGER_OFFSET
+        lmt_off_val    = LIMIT_OFFSET
+        gsl_val        = GLOBAL_SL_PCT
+        mcx_end_str    = MCX_END_TIME
+        buf_crude      = BUF_CRUDEOILM
+        buf_gold       = BUF_GOLDPETAL
+        buf_silver     = BUF_SILVERMIC
+        kc_len         = KC_LENGTH
+        kc_atr         = KC_ATR_LENGTH
+        kc_mult        = KC_MULT
+        rsi_len        = RSI_LENGTH
+        rsi_buy        = RSI_BUY
+        rsi_sell       = RSI_SELL
+
+    # Parse symbols
+    sym_key = symbols_val.strip().lower()
+    if sym_key in SYMBOL_PRESETS:
+        sym_filter = SYMBOL_PRESETS[sym_key]
+    else:
+        sym_filter = [x.strip().upper() for x in symbols_val.split(",") if x.strip()]
+
+    # Parse MCX end time
     try:
-        while True: time.sleep(1)
+        h, m = mcx_end_str.split(":")
+        mcx_end = (int(h), int(m))
+    except Exception:
+        mcx_end = MCX_SESSION_END_DEFAULT
+
+    # Buffer overrides
+    buf_overrides = {}
+    if buf_crude  is not None: buf_overrides["CRUDEOILM"] = buf_crude
+    if buf_gold   is not None: buf_overrides["GOLDPETAL"]  = buf_gold
+    if buf_silver is not None: buf_overrides["SILVERMIC"]  = buf_silver
+
+    if live_val:
+        confirm = input("\n⚠️  LIVE TRADING MODE — real orders will be placed!\nType 'yes' to confirm: ").strip().lower()
+        if confirm != "yes":
+            print("Cancelled."); raise SystemExit(0)
+
+    app = TradingApp(
+        strategy_tf=tf_val,
+        symbols_filter=sym_filter,
+        variation=variation_val,
+        live_mode=live_val,
+        order_type=order_type_val,
+        trigger_offset=trig_off_val,
+        limit_offset=lmt_off_val,
+        global_sl_pct=gsl_val,
+        mcx_session_end=mcx_end,
+        buffer_overrides=buf_overrides if buf_overrides else None,
+        kc_length=kc_len,
+        kc_atr_length=kc_atr,
+        kc_multiplier=kc_mult,
+        rsi_length=rsi_len,
+        rsi_buy_level=rsi_buy,
+        rsi_sell_level=rsi_sell,
+    )
+
+    def _sig_handler(sig, frame):
+        print("\n⏹  Stopping...")
+        app.stop()
+        raise SystemExit(0)
+
+    signal.signal(signal.SIGINT,  _sig_handler)
+    signal.signal(signal.SIGTERM, _sig_handler)
+
+    app.start(with_terminal_ui=True)
+
+    try:
+        while True:
+            time.sleep(1)
     except KeyboardInterrupt:
         app.stop()
+
 
 if __name__ == "__main__":
     main()
