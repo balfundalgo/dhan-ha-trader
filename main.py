@@ -62,7 +62,14 @@ from paper_engine import PaperTradeEngine
 from dashboard import print_dashboard
 
 # ── Base directory ────────────────────────────────────────────────────────────
-BASE_DIR = Path(__file__).resolve().parent
+# ── Base directory ────────────────────────────────────────────────────────────
+# CRITICAL for PyInstaller --onefile:
+#   sys.executable = path to the .exe file itself → saves files next to EXE ✅
+#   __file__       = temp _MEI extraction folder  → files deleted on close ❌
+if getattr(sys, 'frozen', False):
+    BASE_DIR = Path(sys.executable).resolve().parent
+else:
+    BASE_DIR = Path(__file__).resolve().parent
 ENV_FILE = BASE_DIR / ".env"
 load_dotenv(dotenv_path=ENV_FILE, override=True)
 
@@ -330,41 +337,50 @@ class TradingApp:
             try: return _dt.datetime.fromtimestamp(int(epoch)).strftime("%Y-%m-%d %H:%M:%S")
             except: return str(epoch)
 
-        sym_name = str(payload.get("symbol", "UNKNOWN")).upper()
-        is_open  = payload.get("event_type", "").startswith("OPEN")
-        path     = self._get_todays_trade_log(sym_name)
+        try:
+            sym_name = str(payload.get("symbol", "UNKNOWN")).upper()
+            is_open  = payload.get("event_type", "").startswith("OPEN")
+            path     = self._get_todays_trade_log(sym_name)
 
-        # Also write to per-symbol logger
-        sym_logger = self._get_symbol_logger(sym_name)
-        sym_logger.info("TRADE %s | price=%s | pnl=%s",
-                        payload.get("event_type"),
-                        payload.get("entry_price") or payload.get("exit_price"),
-                        payload.get("closed_pnl") or "-")
+            # Also write to per-symbol logger
+            sym_logger = self._get_symbol_logger(sym_name)
+            sym_logger.info("TRADE %s | price=%s | pnl=%s",
+                            payload.get("event_type"),
+                            payload.get("entry_price") or payload.get("exit_price"),
+                            payload.get("closed_pnl") or "-")
 
-        with path.open("a", newline="", encoding="utf-8") as f:
-            csv.writer(f).writerow([
-                _fmt(payload.get("ts")),
-                payload.get("symbol"),
-                payload.get("event_type"),
-                "LIVE" if self.live_mode else "PAPER",
-                self.order_type,
-                payload.get("position_side"),
-                payload.get("entry_price"),
-                _fmt(payload.get("entry_ts")),
-                payload.get("exit_price") if not is_open else "",
-                _fmt(payload.get("ts")) if not is_open else "",
-                payload.get("closed_entry_price"),
-                payload.get("closed_pnl"),
-                payload.get("realized_pnl"),
-                payload.get("trade_count"),
-                payload.get("lot_size"),
-            ])
+            with path.open("a", newline="", encoding="utf-8") as f:
+                csv.writer(f).writerow([
+                    _fmt(payload.get("ts")),
+                    payload.get("symbol"),
+                    payload.get("event_type"),
+                    "LIVE" if self.live_mode else "PAPER",
+                    self.order_type,
+                    payload.get("position_side"),
+                    payload.get("entry_price"),
+                    _fmt(payload.get("entry_ts")),
+                    payload.get("exit_price") if not is_open else "",
+                    _fmt(payload.get("ts")) if not is_open else "",
+                    payload.get("closed_entry_price"),
+                    payload.get("closed_pnl"),
+                    payload.get("realized_pnl"),
+                    payload.get("trade_count"),
+                    payload.get("lot_size"),
+                ])
+            self.logger.info("Trade log written → %s", path)
+        except Exception as e:
+            self.logger.error(
+                "TRADE LOG WRITE FAILED: %s | payload=%s | trades_dir=%s | error=%s",
+                payload.get("event_type"), payload, self.trades_dir, e)
 
     def _on_trade_event(self, event_type, payload):
-        payload["event_type"] = event_type
-        self._append_trade_log(payload)
-        self.logger.info("TRADE %s | %s", event_type, payload)
-        self._save_state()
+        try:
+            payload["event_type"] = event_type
+            self._append_trade_log(payload)
+            self.logger.info("TRADE %s | %s", event_type, payload)
+            self._save_state()
+        except Exception as e:
+            self.logger.error("_on_trade_event error: %s | %s", event_type, e)
 
     # ── State ─────────────────────────────────────────────────────────────────
     def _state_blob(self):
