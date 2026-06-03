@@ -25,7 +25,7 @@ def print_dashboard(app):
 
     print("\033[2J\033[H", end="")
     print(f"  {BOLD}Dhan WS HA Paper Trader (Modular){RESET}  │  TF {app.strategy_tf}m  │  {now_str}  │  WS uptime: {uptime}")
-    print(f"  {DIM}State: {app.state_path.name}  |  Log: {app.log_path.name}  |  Trades: {app.trade_log_path.name}{RESET}")
+    print(f"  {DIM}State: {app.state_path.name}  |  Log: {app.log_path.name}  |  Trades: {app.trades_dir.name}{RESET}")
     print("═" * 168)
     print(
         f"  {'Symbol':16}  {'LTP':>10}  {'Pos':>6}  {'Entry':>10}  {'Pending':>6}  {'Trigger':>10}  "

@@ -53,6 +53,7 @@ F_LABEL=("Segoe UI",13); F_BTN=("Segoe UI",13,"bold")
 F_MONO=("Consolas",12); F_MONO_S=("Consolas",11); F_SMALL=("Segoe UI",11)
 
 ALL_SYMBOLS=["CRUDEOILM","GOLDPETAL","SILVERMIC"]
+INDEX_SYMBOLS=["NIFTY","BANKNIFTY","SENSEX"]
 TF_OPTIONS=["1m","3m","5m","7m","9m","45m","65m","130m"]
 VARIATION_OPTIONS=["ha_static","two_consecutive","keltner","rsi_keltner"]
 VARIATION_LABELS={
@@ -63,7 +64,8 @@ VARIATION_LABELS={
 }
 KC_VARIATIONS={"keltner","rsi_keltner"}; RSI_VARIATIONS={"rsi_keltner"}
 ORDER_TYPES=["MARKET","SL-M","LIMIT"]
-SYM_BUF_DEFAULTS={"CRUDEOILM":"3.0","GOLDPETAL":"10.0","SILVERMIC":"10.0"}
+SYM_BUF_DEFAULTS={"CRUDEOILM":"3.0","GOLDPETAL":"10.0","SILVERMIC":"10.0",
+                   "NIFTY":"50.0","BANKNIFTY":"100.0","SENSEX":"100.0"}
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("dark-blue")
 
@@ -188,7 +190,7 @@ class StrategyTab(ctk.CTkFrame):
         self.var_dd.set(VARIATION_LABELS["ha_static"]); self.var_dd.pack(side="left",padx=6)
 
         row2=ctk.CTkFrame(self,fg_color=CARD_BG,corner_radius=10); row2.pack(fill="x",padx=14,pady=(0,4))
-        ctk.CTkLabel(row2,text="Symbols:",font=F_LABEL,text_color=WHITE_COL).pack(side="left",padx=(16,10),pady=10)
+        ctk.CTkLabel(row2,text="MCX:",font=F_LABEL,text_color=WHITE_COL).pack(side="left",padx=(16,10),pady=10)
         self._sym_vars={}; self._lot_entries={}; self._buf_entries={}
         self._all_var=ctk.BooleanVar(value=True)
         ctk.CTkCheckBox(row2,text="All",variable=self._all_var,font=F_LABEL,text_color=WHITE_COL,fg_color=ACCENT,hover_color=ACCENT_H,command=self._on_all_toggled).pack(side="left",padx=(0,14))
@@ -201,6 +203,23 @@ class StrategyTab(ctk.CTkFrame):
             ctk.CTkLabel(grp,text="buf:",font=("Segoe UI",11),text_color=GREY_COL).pack(side="left")
             buf_e=ctk.CTkEntry(grp,width=52,height=28,fg_color=CARD_BG,border_color=BORDER,text_color=WHITE_COL,font=F_MONO_S); buf_e.insert(0,SYM_BUF_DEFAULTS.get(sym,"3.0")); buf_e.pack(side="left",padx=(2,10),pady=6)
             self._sym_vars[sym]=var; self._lot_entries[sym]=lot_e; self._buf_entries[sym]=buf_e
+
+        # NSE/BSE index symbols — synthetic futures via options
+        row2b=ctk.CTkFrame(self,fg_color=CARD_BG,corner_radius=10); row2b.pack(fill="x",padx=14,pady=(0,4))
+        ctk.CTkLabel(row2b,text="Index (Synthetic):",font=F_LABEL,text_color=CYAN_COL).pack(side="left",padx=(16,10),pady=10)
+        self._idx_vars={}; self._idx_lot_entries={}; self._idx_buf_entries={}
+        self._idx_all_var=ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(row2b,text="All",variable=self._idx_all_var,font=F_LABEL,text_color=WHITE_COL,fg_color=ACCENT,hover_color=ACCENT_H,command=self._on_idx_all_toggled).pack(side="left",padx=(0,14))
+        for sym in INDEX_SYMBOLS:
+            grp=ctk.CTkFrame(row2b,fg_color=PANEL_BG,corner_radius=8); grp.pack(side="left",padx=5,pady=8)
+            var=ctk.BooleanVar(value=False)
+            ctk.CTkCheckBox(grp,text=sym,variable=var,font=F_LABEL,text_color=WHITE_COL,fg_color=ACCENT,hover_color=ACCENT_H,command=self._on_idx_toggled).pack(side="left",padx=(10,4),pady=6)
+            ctk.CTkLabel(grp,text="lot:",font=("Segoe UI",11),text_color=GREY_COL).pack(side="left")
+            lot_e=ctk.CTkEntry(grp,width=52,height=28,placeholder_text="auto",fg_color=CARD_BG,border_color=BORDER,text_color=WHITE_COL,font=F_MONO_S); lot_e.pack(side="left",padx=(2,6),pady=6)
+            ctk.CTkLabel(grp,text="buf:",font=("Segoe UI",11),text_color=GREY_COL).pack(side="left")
+            buf_e=ctk.CTkEntry(grp,width=52,height=28,fg_color=CARD_BG,border_color=BORDER,text_color=WHITE_COL,font=F_MONO_S); buf_e.insert(0,SYM_BUF_DEFAULTS.get(sym,"50.0")); buf_e.pack(side="left",padx=(2,10),pady=6)
+            self._idx_vars[sym]=var; self._idx_lot_entries[sym]=lot_e; self._idx_buf_entries[sym]=buf_e
+        ctk.CTkLabel(row2b,text="  BUY→CE buy+PE sell | SELL→CE sell+PE buy | Monthly expiry",font=("Segoe UI",10),text_color=GREY_COL).pack(side="left",padx=8)
 
         row3=ctk.CTkFrame(self,fg_color=CARD_BG,corner_radius=10); row3.pack(fill="x",padx=14,pady=(0,4))
         ctk.CTkLabel(row3,text="Mode:",font=F_LABEL,text_color=WHITE_COL).pack(side="left",padx=(16,8),pady=10)
@@ -260,7 +279,8 @@ class StrategyTab(ctk.CTkFrame):
                 "global_sl":self.e_gsl.get(),"mcx_h":self.e_mcx_h.get(),"mcx_m":self.e_mcx_m.get(),
                 "kc_len":self.e_kc_len.get(),"kc_atr":self.e_kc_atr.get(),"kc_mult":self.e_kc_mult.get(),
                 "rsi_len":self.e_rsi_len.get(),"rsi_buy":self.e_rsi_buy.get(),"rsi_sell":self.e_rsi_sell.get(),
-                "symbols":{sym:{"enabled":self._sym_vars[sym].get(),"lot":self._lot_entries[sym].get(),"buf":self._buf_entries[sym].get()} for sym in ALL_SYMBOLS}}
+                "symbols":{sym:{"enabled":self._sym_vars[sym].get(),"lot":self._lot_entries[sym].get(),"buf":self._buf_entries[sym].get()} for sym in ALL_SYMBOLS},
+                "index_symbols":{sym:{"enabled":self._idx_vars[sym].get(),"lot":self._idx_lot_entries[sym].get(),"buf":self._idx_buf_entries[sym].get()} for sym in INDEX_SYMBOLS}}
 
     def _apply_settings(self,s):
         if s.get("tf") in TF_OPTIONS: self.tf_dd.set(s["tf"])
@@ -285,6 +305,19 @@ class StrategyTab(ctk.CTkFrame):
                 buf=syms[sym].get("buf",SYM_BUF_DEFAULTS.get(sym,"3.0"))
                 self._buf_entries[sym].delete(0,"end"); self._buf_entries[sym].insert(0,str(buf))
         self._all_var.set(all_en)
+        # Restore index symbols
+        idx_syms=s.get("index_symbols",{}); idx_all_en=True
+        for sym in INDEX_SYMBOLS:
+            if sym in idx_syms:
+                en=bool(idx_syms[sym].get("enabled",False)); self._idx_vars[sym].set(en)
+                if not en: idx_all_en=False
+                lot=idx_syms[sym].get("lot",""); self._idx_lot_entries[sym].delete(0,"end")
+                if lot: self._idx_lot_entries[sym].insert(0,str(lot))
+                buf=idx_syms[sym].get("buf",SYM_BUF_DEFAULTS.get(sym,"50.0"))
+                self._idx_buf_entries[sym].delete(0,"end"); self._idx_buf_entries[sym].insert(0,str(buf))
+            else:
+                idx_all_en=False
+        self._idx_all_var.set(idx_all_en)
 
     def _save_settings(self):
         try: SETTINGS_FILE.write_text(json.dumps(self._collect_settings(),indent=2),encoding="utf-8"); self._elog("💾  Settings saved.")
@@ -298,6 +331,9 @@ class StrategyTab(ctk.CTkFrame):
     def _on_all_toggled(self):
         for v in self._sym_vars.values(): v.set(self._all_var.get())
     def _on_sym_toggled(self): self._all_var.set(all(v.get() for v in self._sym_vars.values()))
+    def _on_idx_all_toggled(self):
+        for v in self._idx_vars.values(): v.set(self._idx_all_var.get())
+    def _on_idx_toggled(self): self._idx_all_var.set(all(v.get() for v in self._idx_vars.values()))
     def _on_mode_change(self): self.live_warn.configure(text="⚠️  REAL ORDERS WILL BE PLACED" if self._mode_var.get()=="LIVE" else "")
     def _on_order_type_change(self,ot):
         self.trig_frame.pack_forget(); self.lmt_frame.pack_forget()
@@ -324,9 +360,15 @@ class StrategyTab(ctk.CTkFrame):
     def _get_symbols_filter(self):
         sel=[s for s,v in self._sym_vars.items() if v.get()]
         return None if len(sel)==len(ALL_SYMBOLS) else sel
+    def _get_index_filter(self):
+        sel=[s for s,v in self._idx_vars.items() if v.get()]
+        return sel if sel else None
     def _get_lot_overrides(self):
         r={}
         for sym,e in self._lot_entries.items():
+            try: r[sym]=int(e.get())
+            except: pass
+        for sym,e in self._idx_lot_entries.items():
             try: r[sym]=int(e.get())
             except: pass
         return r
@@ -334,6 +376,10 @@ class StrategyTab(ctk.CTkFrame):
         r={}
         for sym,e in self._buf_entries.items():
             if not self._sym_vars[sym].get(): continue
+            try: r[sym]=float(e.get())
+            except: pass
+        for sym,e in self._idx_buf_entries.items():
+            if not self._idx_vars[sym].get(): continue
             try: r[sym]=float(e.get())
             except: pass
         return r
@@ -352,10 +398,11 @@ class StrategyTab(ctk.CTkFrame):
         if not self._client_id or not self._access_token:
             messagebox.showerror("No Credentials","Please generate a token first."); return
         selected=[s for s,v in self._sym_vars.items() if v.get()]
-        if not selected: messagebox.showerror("No Symbols","Please select at least one symbol."); return
+        idx_selected=[s for s,v in self._idx_vars.items() if v.get()]
+        if not selected and not idx_selected: messagebox.showerror("No Symbols","Please select at least one symbol."); return
         is_live=self._mode_var.get()=="LIVE"
         if is_live and not messagebox.askyesno("⚠️  LIVE TRADING","REAL orders will be placed.\n\nAre you sure?"): return
-        tf_val=self._get_tf(); sym_filter=self._get_symbols_filter(); variation=self._get_variation()
+        tf_val=self._get_tf(); sym_filter=self._get_symbols_filter(); idx_filter=self._get_index_filter(); variation=self._get_variation()
         lot_ov=self._get_lot_overrides(); buf_ov=self._get_buf_overrides(); order_type=self.order_dd.get()
         try: trig_off=float(self.e_trig.get() or 0)
         except: trig_off=0.0
@@ -377,7 +424,8 @@ class StrategyTab(ctk.CTkFrame):
         def _run():
             try:
                 from main import TradingApp
-                self._app=TradingApp(strategy_tf=tf_val,symbols_filter=sym_filter,variation=variation,
+                self._app=TradingApp(strategy_tf=tf_val,symbols_filter=sym_filter,
+                    index_symbols_filter=idx_filter,variation=variation,
                     lot_size_overrides=lot_ov,buffer_overrides=buf_ov,live_mode=is_live,
                     order_type=order_type,trigger_offset=trig_off,limit_offset=lmt_off,
                     global_sl_pct=global_sl,mcx_session_end=mcx_end,

@@ -19,7 +19,8 @@ Credentials: fill in .env file next to this script.
 
 TF_MINUTES   = 1            # 1 / 3 / 5 / 7 / 9 / 45 / 65 / 130
 VARIATION    = "two_consecutive"  # ha_static | two_consecutive | keltner | rsi_keltner
-SYMBOLS      = "all"        # all | crude | gold | silver | CRUDEOILM,GOLDPETAL
+SYMBOLS      = "all"        # MCX: all | crude | gold | silver | CRUDEOILM,GOLDPETAL
+INDEX_SYMBOLS = ""          # NSE/BSE synthetic: NIFTY | BANKNIFTY | SENSEX | NIFTY,BANKNIFTY,SENSEX | blank=none
 LIVE_MODE    = False        # False = paper trading | True = real orders (use with caution!)
 ORDER_TYPE   = "MARKET"     # MARKET | SL-M | LIMIT
 TRIGGER_OFFSET = 0.0        # pts added to signal price for SL-M trigger
@@ -53,19 +54,19 @@ import csv
 import logging
 import logging.handlers
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 from dotenv import load_dotenv
 
-from market_data import build_instrument_list, MarketDataEngine, fetch_intraday_1m_history
+from market_data import (build_instrument_list, build_index_futures_list,
+                         MarketDataEngine, fetch_intraday_1m_history,
+                         resolve_option_contracts, get_monthly_expiry,
+                         round_to_atm_strike)
 from strategy_ha_static import HAStaticTriggerStrategy, SUPPORTED_VARIATIONS
 from paper_engine import PaperTradeEngine
+from synthetic_engine import SyntheticPaperEngine
 from dashboard import print_dashboard
 
 # ── Base directory ────────────────────────────────────────────────────────────
-# ── Base directory ────────────────────────────────────────────────────────────
-# CRITICAL for PyInstaller --onefile:
-#   sys.executable = path to the .exe file itself → saves files next to EXE ✅
-#   __file__       = temp _MEI extraction folder  → files deleted on close ❌
 if getattr(sys, 'frozen', False):
     BASE_DIR = Path(sys.executable).resolve().parent
 else:
@@ -82,6 +83,9 @@ SYMBOL_PRESETS = {
     "gold":   ["GOLDPETAL"],
     "silver": ["SILVERMIC"],
 }
+
+# Instruments that use synthetic futures execution (options CE+PE)
+SYNTHETIC_INDEX_SYMBOLS = {"NIFTY", "BANKNIFTY", "SENSEX"}
 
 ORDER_TYPE_MAP = {
     "MARKET": "MARKET",
@@ -116,6 +120,7 @@ class TradingApp:
         self,
         strategy_tf: int,
         symbols_filter=None,
+        index_symbols_filter=None,      # NIFTY/BANKNIFTY/SENSEX
         squareoff_symbols=None,
         variation: str = "ha_static",
         rsi_length: int = 14,
@@ -214,21 +219,37 @@ class TradingApp:
                                  self.global_sl_pct, bal, self.global_sl_rupees)
 
         # Instruments
+        # MCX instruments (unchanged)
         self.instruments = build_instrument_list(
             symbol_filter=symbols_filter, logger=self.logger)
+
+        # Index futures instruments for synthetic trading (additive — MCX untouched)
+        index_insts = build_index_futures_list(
+            symbols_filter=index_symbols_filter, logger=self.logger)
+        self.instruments = self.instruments + index_insts
+
         if not self.instruments:
             raise RuntimeError("No instruments resolved. Check symbol names / instrument master.")
 
         for inst in self.instruments:
             self.logger.info(
-                "Instrument: %s [%s] secId=%s lot=%s contract=%s",
+                "Instrument: %s [%s] secId=%s lot=%s contract=%s synthetic=%s",
                 inst["name"], inst["exchange"], inst["security_id"],
-                inst.get("lot_size", 1), inst.get("contract_display", ""))
+                inst.get("lot_size", 1), inst.get("contract_display", ""),
+                inst.get("is_synthetic", False))
 
-        self.sec_to_inst = {str(x["security_id"]): x for x in self.instruments}
-        self.strategies  = {}
-        self.paper       = {}
+        self.sec_to_inst  = {str(x["security_id"]): x for x in self.instruments}
+        self.strategies   = {}
+        self.paper        = {}   # PaperTradeEngine — MCX only
+        self.synthetic    = {}   # SyntheticPaperEngine — index only
         self._ensure_trade_log_header()
+
+        # Preload instrument master once for option resolution at trade time
+        from market_data import load_instrument_master
+        self._inst_df = load_instrument_master()
+
+        # Track live option WS subscriptions: option_sec_id → {futures_sec, leg}
+        self._option_subs: Dict[str, dict] = {}
 
         for inst in self.instruments:
             sec      = str(inst["security_id"])
@@ -244,10 +265,18 @@ class TradingApp:
                 kc_atr_length=self.kc_atr_length, kc_multiplier=self.kc_multiplier,
                 buffer_override=sym_buf, exchange=inst.get("exchange", ""))
 
-            self.paper[sec] = PaperTradeEngine(
-                sym_lot, inst.get("display_prec", 2),
-                event_callback=self._on_trade_event,
-                symbol_name=inst["name"])
+            if inst.get("is_synthetic"):
+                # Index instrument — synthetic futures via options
+                self.synthetic[sec] = SyntheticPaperEngine(
+                    symbol_name=sym_name, lot_size=sym_lot,
+                    display_prec=inst.get("display_prec", 2),
+                    event_callback=self._on_trade_event)
+            else:
+                # MCX instrument — unchanged paper engine
+                self.paper[sec] = PaperTradeEngine(
+                    sym_lot, inst.get("display_prec", 2),
+                    event_callback=self._on_trade_event,
+                    symbol_name=inst["name"])
 
         self.market = MarketDataEngine(
             client_id=DHAN_CLIENT_ID, access_token=DHAN_ACCESS_TOKEN,
@@ -337,63 +366,59 @@ class TradingApp:
             try: return _dt.datetime.fromtimestamp(int(epoch)).strftime("%Y-%m-%d %H:%M:%S")
             except: return str(epoch)
 
-        try:
-            sym_name = str(payload.get("symbol", "UNKNOWN")).upper()
-            is_open  = payload.get("event_type", "").startswith("OPEN")
-            path     = self._get_todays_trade_log(sym_name)
+        sym_name = str(payload.get("symbol", "UNKNOWN")).upper()
+        is_open  = payload.get("event_type", "").startswith("OPEN")
+        path     = self._get_todays_trade_log(sym_name)
 
-            # Also write to per-symbol logger
-            sym_logger = self._get_symbol_logger(sym_name)
-            sym_logger.info("TRADE %s | price=%s | pnl=%s",
-                            payload.get("event_type"),
-                            payload.get("entry_price") or payload.get("exit_price"),
-                            payload.get("closed_pnl") or "-")
+        # Also write to per-symbol logger
+        sym_logger = self._get_symbol_logger(sym_name)
+        sym_logger.info("TRADE %s | price=%s | pnl=%s",
+                        payload.get("event_type"),
+                        payload.get("entry_price") or payload.get("exit_price"),
+                        payload.get("closed_pnl") or "-")
 
-            with path.open("a", newline="", encoding="utf-8") as f:
-                csv.writer(f).writerow([
-                    _fmt(payload.get("ts")),
-                    payload.get("symbol"),
-                    payload.get("event_type"),
-                    "LIVE" if self.live_mode else "PAPER",
-                    self.order_type,
-                    payload.get("position_side"),
-                    payload.get("entry_price"),
-                    _fmt(payload.get("entry_ts")),
-                    payload.get("exit_price") if not is_open else "",
-                    _fmt(payload.get("ts")) if not is_open else "",
-                    payload.get("closed_entry_price"),
-                    payload.get("closed_pnl"),
-                    payload.get("realized_pnl"),
-                    payload.get("trade_count"),
-                    payload.get("lot_size"),
-                ])
-            self.logger.info("Trade log written → %s", path)
-        except Exception as e:
-            self.logger.error(
-                "TRADE LOG WRITE FAILED: %s | payload=%s | trades_dir=%s | error=%s",
-                payload.get("event_type"), payload, self.trades_dir, e)
+        with path.open("a", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerow([
+                _fmt(payload.get("ts")),
+                payload.get("symbol"),
+                payload.get("event_type"),
+                "LIVE" if self.live_mode else "PAPER",
+                self.order_type,
+                payload.get("position_side"),
+                payload.get("entry_price"),
+                _fmt(payload.get("entry_ts")),
+                payload.get("exit_price") if not is_open else "",
+                _fmt(payload.get("ts")) if not is_open else "",
+                payload.get("closed_entry_price"),
+                payload.get("closed_pnl"),
+                payload.get("realized_pnl"),
+                payload.get("trade_count"),
+                payload.get("lot_size"),
+            ])
 
     def _on_trade_event(self, event_type, payload):
-        try:
-            payload["event_type"] = event_type
-            self._append_trade_log(payload)
-            self.logger.info("TRADE %s | %s", event_type, payload)
-            self._save_state()
-        except Exception as e:
-            self.logger.error("_on_trade_event error: %s | %s", event_type, e)
+        payload["event_type"] = event_type
+        self._append_trade_log(payload)
+        self.logger.info("TRADE %s | %s", event_type, payload)
+        self._save_state()
 
     # ── State ─────────────────────────────────────────────────────────────────
     def _state_blob(self):
+        symbols = {}
+        for sec in self.sec_to_inst:
+            blob = {"instrument": self.sec_to_inst[sec],
+                    "strategy":   self.strategies[sec].persist_state()}
+            if self._is_synthetic(sec):
+                blob["synthetic"] = self.synthetic[sec].persist_state()
+            else:
+                blob["paper"] = self.paper[sec].persist_state()
+            symbols[sec] = blob
         return {
             "strategy_tf": self.strategy_tf, "variation": self.variation,
             "live_mode": self.live_mode, "order_type": self.order_type,
             "buffer_overrides": self.buffer_overrides,
             "lot_size_overrides": self.lot_size_overrides,
-            "symbols": {sec: {
-                "instrument": self.sec_to_inst[sec],
-                "strategy":   self.strategies[sec].persist_state(),
-                "paper":      self.paper[sec].persist_state(),
-            } for sec in self.sec_to_inst},
+            "symbols": symbols,
         }
 
     def _save_state(self):
@@ -415,7 +440,10 @@ class TradingApp:
         for sec, blob in data.get("symbols", {}).items():
             if sec in self.strategies:
                 self.strategies[sec].restore_state(blob.get("strategy", {}))
-                self.paper[sec].restore_state(blob.get("paper", {}))
+                if self._is_synthetic(sec) and blob.get("synthetic"):
+                    self.synthetic[sec].restore_state(blob["synthetic"])
+                elif not self._is_synthetic(sec) and blob.get("paper"):
+                    self.paper[sec].restore_state(blob["paper"])
                 restored += 1
         self.logger.info("State restored for %d symbols.", restored)
         return restored > 0
@@ -445,20 +473,20 @@ class TradingApp:
             s = self.strategies[sec]
             s.entry_wait_bucket = None; s.entry_wait_side = None
             s.sl_side = None; s.sl_price = None; s.sl_from_bucket = None
-            p = self.paper[sec]
-            p.position_side = None; p.entry_price = None; p.entry_ts = None
-
-            # For ALL variations: do NOT arm pending from backfill history.
-            # Wait for today's first live candle to close before checking entry.
-            # This prevents entering a trade on yesterday's last candle signal
-            # before today's first candle has even formed.
-            # Exception: if state was restored (existing position), skip this.
-            s.pending_side    = None
-            s.pending_trigger = None
-            s.pending_from_bucket = None
+            s.pending_side = None; s.pending_trigger = None; s.pending_from_bucket = None
             s.last_event = "Startup: waiting for today's first candle to close..."
             self.logger.info("Startup: %s — waiting for first live candle",
                              self.sec_to_inst[sec]["name"])
+
+            if sec in self.synthetic:
+                # Index instrument — clear synthetic position
+                syn = self.synthetic[sec]
+                syn.position_side = None
+                syn.ce_leg.close(); syn.pe_leg.close()
+            else:
+                # MCX instrument — unchanged
+                p = self.paper[sec]
+                p.position_side = None; p.entry_price = None; p.entry_ts = None
 
     # ── Square off ────────────────────────────────────────────────────────────
     def _apply_startup_squareoff(self):
@@ -474,23 +502,33 @@ class TradingApp:
 
     def square_off_all(self):
         for sec, inst in self.sec_to_inst.items():
-            if self.paper[sec].position_side is None: continue
-            snap = self.market.engines[sec].snapshot(); ltp = snap["ltp"]
-            if ltp is None: continue
-            if self.live_mode and self.live_engine:
-                side = "SELL" if self.paper[sec].position_side == "LONG" else "BUY"
-                def _on_sq(fp, oid, _sec=sec):
-                    self.paper[_sec].square_off(fp, int(time.time()))
-                    self.strategies[_sec].clear_trade_tracking(None)
-                    self.strategies[_sec].pending_side = None
-                    self._save_state()
-                self.live_engine.execute_with_fallback(
-                    side, inst["security_id"], inst["exchange"],
-                    self.paper[sec].lot_size, "MARKET", on_fill=_on_sq)
-            else:
-                self.paper[sec].square_off(float(ltp), int(snap["ltt_epoch"] or time.time()))
+            if sec in self.synthetic:
+                syn = self.synthetic[sec]
+                if not syn.is_open(): continue
+                syn.close_position(
+                    ce_exit_price=syn.ce_leg.current_ltp or 0,
+                    pe_exit_price=syn.pe_leg.current_ltp or 0,
+                    ts=int(time.time()))
                 self.strategies[sec].clear_trade_tracking(None)
                 self.strategies[sec].pending_side = None
+            else:
+                if self.paper[sec].position_side is None: continue
+                snap = self.market.engines[sec].snapshot(); ltp = snap["ltp"]
+                if ltp is None: continue
+                if self.live_mode and self.live_engine:
+                    side = "SELL" if self.paper[sec].position_side == "LONG" else "BUY"
+                    def _on_sq(fp, oid, _sec=sec):
+                        self.paper[_sec].square_off(fp, int(time.time()))
+                        self.strategies[_sec].clear_trade_tracking(None)
+                        self.strategies[_sec].pending_side = None
+                        self._save_state()
+                    self.live_engine.execute_with_fallback(
+                        side, inst["security_id"], inst["exchange"],
+                        self.paper[sec].lot_size, "MARKET", on_fill=_on_sq)
+                else:
+                    self.paper[sec].square_off(float(ltp), int(snap["ltt_epoch"] or time.time()))
+                    self.strategies[sec].clear_trade_tracking(None)
+                    self.strategies[sec].pending_side = None
         self._save_state()
 
     # ── Global SL ─────────────────────────────────────────────────────────────
@@ -550,8 +588,25 @@ class TradingApp:
             return lmt, 0.0
         return 0.0, 0.0
 
+    # ── Helpers ───────────────────────────────────────────────────────────────
+    def _is_synthetic(self, sec: str) -> bool:
+        return sec in self.synthetic
+
+    def _get_position_side(self, sec: str):
+        if self._is_synthetic(sec):
+            return self.synthetic[sec].position_side
+        return self.paper[sec].position_side
+
+    # ── Signal execution dispatcher ───────────────────────────────────────────
     def _execute_signal(self, sec, sig, ts_epoch):
         if self.global_sl_hit: return
+        if self._is_synthetic(sec):
+            self._execute_synthetic_signal(sec, sig, ts_epoch)
+        else:
+            self._execute_mcx_signal(sec, sig, ts_epoch)
+
+    def _execute_mcx_signal(self, sec, sig, ts_epoch):
+        """MCX single-leg execution — completely unchanged."""
         side         = sig["side"]
         signal_price = float(sig["price"])
         inst         = self.sec_to_inst[sec]
@@ -566,7 +621,7 @@ class TradingApp:
                 self.strategies[_sec].on_trade_executed(_sig["side"])
                 self._save_state()
             def _on_err(err, _sec=sec):
-                self.logger.error("Live order error %s: %s", inst["name"], err)
+                self.logger.error("Live MCX order error %s: %s", inst["name"], err)
                 self.strategies[_sec].on_trade_executed(side)
             self.live_engine.execute_with_fallback(
                 transaction_type=side, security_id=inst["security_id"],
@@ -579,30 +634,212 @@ class TradingApp:
             self.strategies[sec].on_trade_executed(side)
             self._save_state()
 
+    def _resolve_atm_options(self, sec: str) -> Optional[tuple]:
+        """
+        Resolve ATM CE+PE contracts using current futures LTP.
+        Returns (contracts_dict, atm_strike, expiry_date) or None on failure.
+        """
+        inst       = self.sec_to_inst[sec]
+        index_name = inst["name"].upper()
+        ltp        = self.market.engines[sec].snapshot()["ltp"]
+        if ltp is None:
+            self.logger.warning("Cannot resolve ATM for %s: no futures LTP", index_name)
+            return None
+
+        atm_strike = round_to_atm_strike(ltp, index_name)
+        expiry     = get_monthly_expiry(index_name)
+        lot_ov     = self.lot_size_overrides.get(index_name)
+
+        self.logger.info("%s futures LTP=%.2f → ATM strike=%d expiry=%s",
+                         index_name, ltp, atm_strike, expiry)
+
+        contracts = resolve_option_contracts(
+            index_name=index_name, strike=atm_strike,
+            expiry_date=expiry, df=self._inst_df,
+            lot_size_override=lot_ov, logger=self.logger)
+
+        if contracts is None:
+            self.logger.error("Could not resolve options for %s strike=%d expiry=%s",
+                              index_name, atm_strike, expiry)
+            return None
+
+        return contracts, atm_strike, expiry
+
+    def _execute_synthetic_signal(self, sec, sig, ts_epoch):
+        """
+        Synthetic futures execution for index instruments.
+        BUY  → BUY ATM CE  + SELL ATM PE
+        SELL → SELL ATM CE + BUY ATM PE
+        Reversal: exit old legs first (sequentially), then enter new legs.
+        """
+        syn_engine = self.synthetic[sec]
+        new_side   = "LONG" if sig["side"] == "BUY" else "SHORT"
+        has_pos    = syn_engine.is_open()
+
+        def _run():
+            try:
+                # ── Step 1 & 2: Exit existing legs sequentially ───────────────
+                if has_pos:
+                    old_ce_sec   = syn_engine.ce_leg.security_id
+                    old_pe_sec   = syn_engine.pe_leg.security_id
+                    old_ce_exit  = "SELL" if syn_engine.ce_leg.side == "BUY" else "BUY"
+                    old_pe_exit  = "SELL" if syn_engine.pe_leg.side == "BUY" else "BUY"
+                    exchange     = self.sec_to_inst[sec]["exchange"]
+                    lot          = syn_engine.ce_leg.lot_size
+                    ce_fill      = [syn_engine.ce_leg.current_ltp or 0]
+                    pe_fill      = [syn_engine.pe_leg.current_ltp or 0]
+
+                    if self.live_mode and self.live_engine:
+                        # Exit CE leg
+                        def _ce_exit_filled(fp, oid): ce_fill[0] = fp
+                        self.live_engine.execute_with_fallback(
+                            old_ce_exit, old_ce_sec, exchange, lot,
+                            "MARKET", on_fill=_ce_exit_filled)
+                        deadline = time.time() + 15
+                        while ce_fill[0] == (syn_engine.ce_leg.current_ltp or 0) and time.time() < deadline:
+                            time.sleep(0.2)
+
+                        # Exit PE leg
+                        def _pe_exit_filled(fp, oid): pe_fill[0] = fp
+                        self.live_engine.execute_with_fallback(
+                            old_pe_exit, old_pe_sec, exchange, lot,
+                            "MARKET", on_fill=_pe_exit_filled)
+                        deadline = time.time() + 15
+                        while pe_fill[0] == (syn_engine.pe_leg.current_ltp or 0) and time.time() < deadline:
+                            time.sleep(0.2)
+
+                    syn_engine.close_position(
+                        ce_exit_price=ce_fill[0],
+                        pe_exit_price=pe_fill[0],
+                        ts=int(time.time()))
+                    self.logger.info("Synthetic closed: %s", self.sec_to_inst[sec]["name"])
+
+                # ── Step 3 & 4: Resolve fresh ATM and enter new legs ──────────
+                result = self._resolve_atm_options(sec)
+                if result is None:
+                    self.strategies[sec].on_trade_executed(sig["side"])
+                    return
+
+                contracts, atm_strike, expiry = result
+                ce_info  = contracts["CE"]
+                pe_info  = contracts["PE"]
+                exchange = ce_info["exchange"]
+                lot      = ce_info["lot_size"]
+
+                ce_entry_side = "BUY"  if new_side == "LONG" else "SELL"
+                pe_entry_side = "SELL" if new_side == "LONG" else "BUY"
+
+                # Subscribe option LTPs via WebSocket for P&L tracking
+                self._subscribe_option(ce_info["security_id"], sec, "CE")
+                self._subscribe_option(pe_info["security_id"], sec, "PE")
+
+                ce_price = [0.0]
+                pe_price = [0.0]
+
+                if self.live_mode and self.live_engine:
+                    # Enter CE leg
+                    def _ce_filled(fp, oid): ce_price[0] = fp
+                    self.live_engine.execute_with_fallback(
+                        ce_entry_side, ce_info["security_id"], exchange,
+                        lot, "MARKET", on_fill=_ce_filled)
+                    deadline = time.time() + 15
+                    while ce_price[0] == 0 and time.time() < deadline:
+                        time.sleep(0.2)
+
+                    # Enter PE leg
+                    def _pe_filled(fp, oid): pe_price[0] = fp
+                    self.live_engine.execute_with_fallback(
+                        pe_entry_side, pe_info["security_id"], exchange,
+                        lot, "MARKET", on_fill=_pe_filled)
+                    deadline = time.time() + 15
+                    while pe_price[0] == 0 and time.time() < deadline:
+                        time.sleep(0.2)
+                else:
+                    # Paper mode — use a nominal price (actual LTP not available yet)
+                    ce_price[0] = 100.0
+                    pe_price[0] = 100.0
+
+                syn_engine.open_position(
+                    synthetic_side=new_side,
+                    strike=atm_strike,
+                    expiry_str=ce_info["expiry_str"],
+                    ce_security_id=ce_info["security_id"],
+                    pe_security_id=pe_info["security_id"],
+                    ce_price=ce_price[0],
+                    pe_price=pe_price[0],
+                    ts=int(time.time()),
+                    lot_size=lot)
+
+                self.strategies[sec].on_trade_executed(sig["side"])
+                self._save_state()
+                self.logger.info(
+                    "Synthetic %s opened: %s strike=%d CE=%s PE=%s",
+                    new_side, self.sec_to_inst[sec]["name"],
+                    atm_strike, ce_info["security_id"], pe_info["security_id"])
+
+            except Exception as e:
+                self.logger.error("_execute_synthetic_signal error %s: %s",
+                                  self.sec_to_inst[sec]["name"], e)
+                self.strategies[sec].on_trade_executed(sig["side"])
+
+        import threading as _th
+        _th.Thread(target=_run, daemon=True).start()
+
+    def _subscribe_option(self, option_sec_id: str, futures_sec: str, leg: str):
+        """Subscribe to option LTP via WebSocket for P&L tracking."""
+        self._option_subs[option_sec_id] = {"futures_sec": futures_sec, "leg": leg}
+        try:
+            inst     = self.sec_to_inst.get(futures_sec, {})
+            exchange = inst.get("exchange", "NSE_FNO")
+            sub_msg  = {
+                "RequestCode":     15,
+                "InstrumentCount": 1,
+                "InstrumentList":  [{"ExchangeSegment": exchange,
+                                     "SecurityId": str(option_sec_id)}],
+            }
+            if self.market.ws:
+                import json as _json
+                self.market.ws.send(_json.dumps(sub_msg))
+                self.logger.info("Subscribed option LTP: %s leg=%s", option_sec_id, leg)
+        except Exception as e:
+            self.logger.warning("Option WS subscription failed: %s", e)
+
     def _handle_strategy_exit_if_any(self, sec, fallback_ts):
         exit_sig = self.strategies[sec].check_stoploss_exit()
         if not exit_sig: return
-        paper = self.paper[sec]; inst = self.sec_to_inst[sec]
-        side_match = ((exit_sig["exit_side"]=="LONG" and paper.position_side=="LONG") or
-                      (exit_sig["exit_side"]=="SHORT" and paper.position_side=="SHORT"))
+        pos_side  = self._get_position_side(sec)
+        side_match = ((exit_sig["exit_side"]=="LONG"  and pos_side=="LONG") or
+                      (exit_sig["exit_side"]=="SHORT" and pos_side=="SHORT"))
         if not side_match: return
-        close_side = "SELL" if exit_sig["exit_side"] == "LONG" else "BUY"
-        if self.live_mode and self.live_engine:
-            def _on_sl(fp, oid, _sec=sec):
-                self.paper[_sec].square_off(fp, int(time.time()))
-                self.strategies[_sec].clear_trade_tracking(None); self._save_state()
-            self.live_engine.execute_with_fallback(
-                close_side, inst["security_id"], inst["exchange"],
-                paper.lot_size, "MARKET", on_fill=_on_sl)
+
+        if self._is_synthetic(sec):
+            syn = self.synthetic[sec]
+            if syn.is_open():
+                syn.close_position(
+                    ce_exit_price=syn.ce_leg.current_ltp or 0,
+                    pe_exit_price=syn.pe_leg.current_ltp or 0,
+                    ts=int(fallback_ts))
+            self.strategies[sec].clear_trade_tracking(None)
         else:
-            paper.square_off(float(exit_sig["exit_price"]), int(fallback_ts))
-        self.strategies[sec].clear_trade_tracking(None)
+            paper      = self.paper[sec]
+            inst       = self.sec_to_inst[sec]
+            close_side = "SELL" if exit_sig["exit_side"] == "LONG" else "BUY"
+            if self.live_mode and self.live_engine:
+                def _on_sl(fp, oid, _sec=sec):
+                    self.paper[_sec].square_off(fp, int(time.time()))
+                    self.strategies[_sec].clear_trade_tracking(None); self._save_state()
+                self.live_engine.execute_with_fallback(
+                    close_side, inst["security_id"], inst["exchange"],
+                    paper.lot_size, "MARKET", on_fill=_on_sl)
+            else:
+                paper.square_off(float(exit_sig["exit_price"]), int(fallback_ts))
+            self.strategies[sec].clear_trade_tracking(None)
 
     # ── Callbacks ─────────────────────────────────────────────────────────────
     def _on_new_1m_candle(self, sec, row_1m):
         self.strategies[sec].on_new_1m_candle(row_1m)
         self._handle_strategy_exit_if_any(sec, int(row_1m["bucket"]) + 59)
-        self.strategies[sec].on_signal_aligned_position(self.paper[sec].position_side)
+        self.strategies[sec].on_signal_aligned_position(self._get_position_side(sec))
         if self.sec_to_inst[sec].get("exchange") == "MCX_COMM":
             self._check_mcx_session_end()
         sig = self.strategies[sec].check_intrabar_range_hit(
@@ -612,7 +849,18 @@ class TradingApp:
         self._save_state()
 
     def _on_ltp(self, sec, ltp, ts_epoch):
-        self.strategies[sec].on_signal_aligned_position(self.paper[sec].position_side)
+        # Route option LTPs to synthetic engine for P&L tracking
+        if sec in self._option_subs:
+            sub_info    = self._option_subs[sec]
+            futures_sec = sub_info["futures_sec"]
+            leg         = sub_info["leg"]
+            if futures_sec in self.synthetic:
+                if leg == "CE": self.synthetic[futures_sec].on_ce_ltp(ltp)
+                else:           self.synthetic[futures_sec].on_pe_ltp(ltp)
+            return
+
+        # Normal futures/MCX trigger check
+        self.strategies[sec].on_signal_aligned_position(self._get_position_side(sec))
         signal_hit = self.strategies[sec].check_trigger_hit(ltp)
         if signal_hit:
             self._execute_signal(sec, signal_hit, ts_epoch)
@@ -750,12 +998,38 @@ Examples:
     return parser.parse_args()
 
 
+def _ensure_token() -> bool:
+    """
+    If DHAN_ACCESS_TOKEN is missing or empty, auto-generate it using
+    TOTP credentials from .env. Saves the new token back to .env.
+    Returns True if credentials are ready, False if cannot proceed.
+    """
+    global DHAN_CLIENT_ID, DHAN_ACCESS_TOKEN
+    if DHAN_CLIENT_ID and DHAN_ACCESS_TOKEN:
+        return True
+
+    print("\n⏳  Access token missing — attempting auto-generation via TOTP...")
+    try:
+        from dhan_token_manager import load_config, get_fresh_token, save_token_to_env
+        cfg = load_config()
+        if not cfg.get("totp_secret") or not cfg.get("pin"):
+            print("❌  DHAN_PIN and DHAN_TOTP_SECRET must be set in .env for auto-generation.")
+            return False
+        token = get_fresh_token(cfg, force_new=True)
+        save_token_to_env(token)
+        DHAN_CLIENT_ID    = cfg["client_id"]
+        DHAN_ACCESS_TOKEN = token
+        os.environ["DHAN_ACCESS_TOKEN"] = token
+        print(f"✅  Token generated: {token[:28]}...")
+        return True
+    except Exception as e:
+        print(f"❌  Auto token generation failed: {e}")
+        print("    Please set DHAN_ACCESS_TOKEN manually in .env")
+        return False
+
+
 def main():
-    if not DHAN_CLIENT_ID or not DHAN_ACCESS_TOKEN:
-        print("\n❌  Missing credentials!")
-        print("    Create a .env file in this folder with:")
-        print("    DHAN_CLIENT_ID=your_client_id")
-        print("    DHAN_ACCESS_TOKEN=your_token\n")
+    if not _ensure_token():
         raise SystemExit(1)
 
     # If no CLI args provided (e.g. VS Code Play button), use CONFIG block above.
@@ -767,6 +1041,7 @@ def main():
         tf_val         = args.tf
         variation_val  = args.variation
         symbols_val    = args.symbols
+        index_symbols_val = getattr(args, "index_symbols", "")
         live_val       = args.live
         order_type_val = args.order_type
         trig_off_val   = args.trigger_offset
@@ -787,6 +1062,7 @@ def main():
         tf_val         = TF_MINUTES
         variation_val  = VARIATION
         symbols_val    = SYMBOLS
+        index_symbols_val = INDEX_SYMBOLS
         live_val       = LIVE_MODE
         order_type_val = ORDER_TYPE
         trig_off_val   = TRIGGER_OFFSET
@@ -803,12 +1079,18 @@ def main():
         rsi_buy        = RSI_BUY
         rsi_sell       = RSI_SELL
 
-    # Parse symbols
+    # Parse MCX symbols
     sym_key = symbols_val.strip().lower()
     if sym_key in SYMBOL_PRESETS:
         sym_filter = SYMBOL_PRESETS[sym_key]
     else:
         sym_filter = [x.strip().upper() for x in symbols_val.split(",") if x.strip()]
+
+    # Parse index symbols (NIFTY/BANKNIFTY/SENSEX)
+    if index_symbols_val and index_symbols_val.strip():
+        index_filter = [x.strip().upper() for x in index_symbols_val.split(",") if x.strip()]
+    else:
+        index_filter = None
 
     # Parse MCX end time
     try:
@@ -831,6 +1113,7 @@ def main():
     app = TradingApp(
         strategy_tf=tf_val,
         symbols_filter=sym_filter,
+        index_symbols_filter=index_filter,
         variation=variation_val,
         live_mode=live_val,
         order_type=order_type_val,

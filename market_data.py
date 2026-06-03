@@ -680,3 +680,239 @@ class MarketDataEngine:
                 "last_ws_error": self.last_ws_error,
                 "packet_counts": dict(self.packet_counts),
             }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  INDEX FUTURES + SYNTHETIC OPTIONS  (additive — no existing code changed)
+# ═══════════════════════════════════════════════════════════════════════════
+
+import calendar as _calendar
+
+STRIKE_INTERVALS       = {"NIFTY": 50, "BANKNIFTY": 100, "SENSEX": 100}
+MONTHLY_EXPIRY_WEEKDAY = {"NIFTY": 1, "BANKNIFTY": 1, "SENSEX": 3}  # Tue/Tue/Thu (NSE changed to Tuesday)
+INDEX_EXCHANGE         = {"NIFTY": "NSE_FNO", "BANKNIFTY": "NSE_FNO", "SENSEX": "BSE_FNO"}
+INDEX_OPT_EXCHANGE     = {"NIFTY": "NSE_FNO", "BANKNIFTY": "NSE_FNO", "SENSEX": "BSE_FNO"}
+
+# How to match SYMBOL_NAME in Dhan CSV for each index
+# NSE: SYMBOL_NAME = "NIFTY-Jun2026-FUT" → use startswith
+# BSE: SYMBOL_NAME = "BSXFUT"            → use exact match
+INDEX_SYMBOL_NAME_MAP = {
+    "NIFTY":     ("startswith", "NIFTY-"),
+    "BANKNIFTY": ("startswith", "BANKNIFTY-"),
+    "SENSEX":    ("exact",      "BSXFUT"),
+}
+
+
+# How to match SYMBOL_NAME in Dhan CSV for each index options
+# NSE: SYMBOL_NAME = "NIFTY-Jun2026-24500-CE" -> startswith + ends with -CE/-PE
+# BSE: SYMBOL_NAME = "BSXOPT"                 -> exact match, type from DISPLAY_NAME
+INDEX_OPT_SYMBOL_NAME_MAP = {
+    "NIFTY":     ("startswith", "NIFTY-"),
+    "BANKNIFTY": ("startswith", "BANKNIFTY-"),
+    "SENSEX":    ("exact",      "BSXOPT"),
+}
+
+def get_monthly_expiry(index_name: str, ref_date=None):
+    import datetime as _dt
+    today      = ref_date or _dt.date.today()
+    target_wd  = MONTHLY_EXPIRY_WEEKDAY.get(index_name.upper(), 3)
+
+    def _last_wd(year, month, wd):
+        last = _calendar.monthrange(year, month)[1]
+        last_date = _dt.date(year, month, last)
+        offset = (last_date.weekday() - wd) % 7
+        return last_date - _dt.timedelta(days=offset)
+
+    expiry = _last_wd(today.year, today.month, target_wd)
+    if today > expiry:
+        nm = today.month + 1 if today.month < 12 else 1
+        ny = today.year if today.month < 12 else today.year + 1
+        expiry = _last_wd(ny, nm, target_wd)
+    return expiry
+
+
+def round_to_atm_strike(ltp: float, index_name: str) -> int:
+    interval = STRIKE_INTERVALS.get(index_name.upper(), 50)
+    return int(round(float(ltp) / interval) * interval)
+
+
+def expiry_to_dhan_str(expiry_date) -> str:
+    months = ["JAN","FEB","MAR","APR","MAY","JUN",
+               "JUL","AUG","SEP","OCT","NOV","DEC"]
+    return f"{expiry_date.year % 100:02d}{months[expiry_date.month - 1]}"
+
+
+def resolve_index_futures(index_name: str, df=None, logger=None):
+    import datetime as _dt
+    index_name = index_name.upper()
+    exchange   = INDEX_EXCHANGE.get(index_name, "NSE_FNO")
+    exch_id    = "NSE" if "NSE" in exchange else "BSE"
+
+    if df is None:
+        df = load_instrument_master()
+    if df is None:
+        if logger: logger.error("Instrument master unavailable for %s", index_name)
+        return None
+
+    match_type, match_val = INDEX_SYMBOL_NAME_MAP.get(index_name, ("startswith", index_name + "-"))
+    if match_type == "exact":
+        mask = (
+            (df["EXCH_ID"].astype(str).str.upper() == exch_id) &
+            (df["INSTRUMENT"].astype(str).str.upper() == "FUTIDX") &
+            (df["SYMBOL_NAME"].astype(str).str.upper() == match_val.upper())
+        )
+    else:
+        mask = (
+            (df["EXCH_ID"].astype(str).str.upper() == exch_id) &
+            (df["INSTRUMENT"].astype(str).str.upper() == "FUTIDX") &
+            (df["SYMBOL_NAME"].astype(str).str.upper().str.startswith(match_val.upper()))
+        )
+    candidates = df[mask].copy()
+    if candidates.empty:
+        if logger: logger.warning("No futures found for %s (exch=%s)", index_name, exch_id)
+        return None
+
+    today = _dt.datetime.now().date()
+    best  = None; best_days = 999999
+    for _, row in candidates.iterrows():
+        try:
+            exp = pd.to_datetime(row["SM_EXPIRY_DATE"])
+            if pd.isna(exp): continue
+            days_left = (exp.date() - today).days
+            if days_left >= 0 and days_left < best_days:
+                best_days = days_left; best = row
+        except Exception:
+            continue
+
+    if best is None:
+        if logger: logger.warning("No valid expiry for %s", index_name)
+        return None
+
+    sid = str(int(float(best["SECURITY_ID"])))
+    sym = str(best.get("DISPLAY_NAME") or best.get("SYMBOL_NAME") or index_name).strip()
+    lot = 1
+    try: lot = int(float(best["LOT_SIZE"])) or 1
+    except Exception: pass
+
+    if logger:
+        logger.info("Resolved %s futures: %s secId=%s lot=%d", index_name, sym, sid, lot)
+
+    return {
+        "name":             index_name,
+        "exchange":         exchange,
+        "security_id":      sid,
+        "lot_size":         lot,
+        "display_prec":     2,
+        "contract_display": sym,
+        "instrument_type":  "FUTIDX",
+        "is_synthetic":     True,
+        "strike_interval":  STRIKE_INTERVALS.get(index_name, 50),
+    }
+
+
+def resolve_option_contracts(index_name, strike, expiry_date,
+                              df=None, lot_size_override=None, logger=None):
+    index_name = index_name.upper()
+    exchange   = INDEX_OPT_EXCHANGE.get(index_name, "NSE_FNO")
+    exch_id    = "NSE" if "NSE" in exchange else "BSE"
+
+    if df is None:
+        df = load_instrument_master()
+    if df is None:
+        return None
+
+    match_type, match_val = INDEX_OPT_SYMBOL_NAME_MAP.get(
+        index_name, ("startswith", index_name + "-"))
+    is_bse = (exch_id == "BSE")
+
+    # Base filter: exchange + instrument type + symbol name
+    if match_type == "exact":
+        base_mask = (
+            (df["EXCH_ID"].astype(str).str.upper() == exch_id) &
+            (df["INSTRUMENT"].astype(str).str.upper() == "OPTIDX") &
+            (df["SYMBOL_NAME"].astype(str).str.upper() == match_val.upper())
+        )
+    else:
+        base_mask = (
+            (df["EXCH_ID"].astype(str).str.upper() == exch_id) &
+            (df["INSTRUMENT"].astype(str).str.upper() == "OPTIDX") &
+            (df["SYMBOL_NAME"].astype(str).str.upper().str.startswith(match_val.upper()))
+        )
+
+    candidates_all = df[base_mask].copy()
+    if candidates_all.empty:
+        if logger: logger.warning("No OPTIDX found for %s", index_name)
+        return None
+
+    # Filter by expiry date
+    try:
+        candidates_all["_exp"] = pd.to_datetime(
+            candidates_all["SM_EXPIRY_DATE"], errors="coerce")
+        candidates_all = candidates_all[
+            candidates_all["_exp"].dt.date == expiry_date]
+    except Exception as e:
+        if logger: logger.warning("Expiry filter error: %s", e)
+
+    if candidates_all.empty:
+        if logger: logger.warning("No %s options for expiry %s", index_name, expiry_date)
+        return None
+
+    # Filter by STRIKE_PRICE
+    strike_rows = candidates_all[
+        candidates_all["STRIKE_PRICE"].apply(
+            lambda x: int(float(x)) == int(strike) if pd.notna(x) else False)]
+
+    if strike_rows.empty:
+        if logger: logger.warning("Strike %d not found for %s", strike, index_name)
+        return None
+
+    result = {}
+    for opt_type in ("CE", "PE"):
+        # Map CE/PE to CALL/PUT for display name matching
+        call_put_word = "CALL" if opt_type == "CE" else "PUT"
+
+        if is_bse:
+            # BSE: filter by DISPLAY_NAME containing CALL or PUT
+            matches = strike_rows[
+                strike_rows["DISPLAY_NAME"].astype(str).str.upper().str.contains(call_put_word)]
+        else:
+            # NSE: SYMBOL_NAME ends with -CE or -PE
+            matches = strike_rows[
+                strike_rows["SYMBOL_NAME"].astype(str).str.upper().str.endswith(f"-{opt_type}")]
+
+        if matches.empty:
+            if logger: logger.warning("No %s %s match at strike %d", index_name, opt_type, strike)
+            return None
+
+        row = matches.iloc[0]
+        sid = str(int(float(row["SECURITY_ID"])))
+        sym = str(row.get("DISPLAY_NAME") or f"{index_name}{strike}{opt_type}").strip()
+        lot = lot_size_override
+        if lot is None:
+            try: lot = int(float(row["LOT_SIZE"])) or 1
+            except Exception: lot = 1
+
+        result[opt_type] = {
+            "security_id": sid, "symbol": sym, "lot_size": lot,
+            "exchange":    exchange, "strike": int(strike),
+            "expiry_str":  expiry_to_dhan_str(expiry_date), "option_type": opt_type,
+        }
+        if logger:
+            logger.info("Resolved %s %s %s: %s secId=%s lot=%d",
+                        index_name, expiry_to_dhan_str(expiry_date), opt_type, sym, sid, lot)
+
+    return result if len(result) == 2 else None
+
+
+def build_index_futures_list(symbols_filter=None, logger=None):
+    all_index = ["NIFTY", "BANKNIFTY", "SENSEX"]
+    if symbols_filter:
+        wanted    = {s.strip().upper() for s in symbols_filter}
+        all_index = [s for s in all_index if s in wanted]
+    df          = load_instrument_master()
+    instruments = []
+    for idx_name in all_index:
+        inst = resolve_index_futures(idx_name, df=df, logger=logger)
+        if inst:
+            instruments.append(inst)
+    return instruments
