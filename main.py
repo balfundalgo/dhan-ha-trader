@@ -493,6 +493,7 @@ class TradingApp:
         if not self.squareoff_symbols: return
         for sec, inst in self.sec_to_inst.items():
             if "ALL" not in self.squareoff_symbols and inst["name"].upper() not in self.squareoff_symbols: continue
+            if self._is_synthetic(sec): continue   # synthetic handled separately
             snap = self.market.engines[sec].snapshot()
             ltp  = snap["ltp"]; ts = snap["ltt_epoch"] or int(time.time())
             if ltp is None or self.paper[sec].position_side is None: continue
@@ -540,8 +541,12 @@ class TradingApp:
                 total_pnl = 0.0
                 for sec in self.sec_to_inst:
                     base  = self.market.engines[sec].snapshot()
-                    paper = self.paper[sec].snapshot(base["ltp"])
-                    total_pnl += float(paper["realized_pnl"]) + float(paper["unrealized_pnl"])
+                    if self._is_synthetic(sec):
+                        syn = self.synthetic[sec]
+                        total_pnl += float(syn.realized_pnl) + float(syn.unrealized_pnl)
+                    else:
+                        paper = self.paper[sec].snapshot(base["ltp"])
+                        total_pnl += float(paper["realized_pnl"]) + float(paper["unrealized_pnl"])
                 if total_pnl <= -abs(self.global_sl_rupees):
                     self.global_sl_hit = True
                     self.logger.warning("GLOBAL SL HIT: P&L ₹%.2f. Squaring off.", total_pnl)
@@ -921,30 +926,65 @@ class TradingApp:
         for sec, inst in self.sec_to_inst.items():
             base  = self.market.engines[sec].snapshot()
             strat = self.strategies[sec].snapshot()
-            paper = self.paper[sec].snapshot(base["ltp"])
             prec  = int(inst["display_prec"])
-            result["total_unrealized"] += float(paper["unrealized_pnl"])
-            result["total_realized"]   += float(paper["realized_pnl"])
             ha_last = strat["ha_last"]
-            result["symbols"].append({
-                "name":             inst["name"],
-                "contract_display": inst.get("contract_display", "-"),
-                "buffer":           self.strategies[sec].buffer,
-                "lot":              int(paper["lot_size"]),
-                "prec":             prec,
-                "ltp":              base["ltp"],
-                "position":         paper["position_side"] or "-",
-                "entry":            paper["entry_price"],
-                "pending":          strat["pending_side"] or "-",
-                "trigger":          strat["pending_trigger"],
-                "unrealized":       float(paper["unrealized_pnl"]),
-                "realized":         float(paper["realized_pnl"]),
-                "ha_color":         ha_last["color"] if ha_last else "-",
-                "ha_streak":        int(ha_last["streak"]) if ha_last else 0,
-                "event":            paper.get("last_event","-") if paper.get("last_event","-") != "-" else strat["last_event"],
-                "ha_history":       strat["ha_history"][-5:],
-                "sl_price":         strat.get("sl_price"),
-            })
+
+            if self._is_synthetic(sec):
+                syn = self.synthetic[sec]
+                ce  = syn.ce_leg; pe = syn.pe_leg
+                upnl = syn.unrealized_pnl
+                rpnl = syn.realized_pnl
+                result["total_unrealized"] += float(upnl)
+                result["total_realized"]   += float(rpnl)
+                pos_str = "-"
+                if syn.position_side:
+                    strike = ce.strike or pe.strike or "-"
+                    pos_str = f"{syn.position_side} {strike}"
+                entry_str = None
+                if ce.entry_price and pe.entry_price:
+                    entry_str = f"C{ce.entry_price:.0f}/P{pe.entry_price:.0f}"
+                result["symbols"].append({
+                    "name":             inst["name"],
+                    "contract_display": inst.get("contract_display", "-"),
+                    "buffer":           self.strategies[sec].buffer,
+                    "lot":              int(syn.lot_size),
+                    "prec":             prec,
+                    "ltp":              base["ltp"],
+                    "position":         pos_str,
+                    "entry":            entry_str,
+                    "pending":          strat["pending_side"] or "-",
+                    "trigger":          strat["pending_trigger"],
+                    "unrealized":       float(upnl),
+                    "realized":         float(rpnl),
+                    "ha_color":         ha_last["color"] if ha_last else "-",
+                    "ha_streak":        int(ha_last["streak"]) if ha_last else 0,
+                    "event":            syn.last_event if syn.last_event != "-" else strat["last_event"],
+                    "ha_history":       strat["ha_history"][-5:],
+                    "sl_price":         strat.get("sl_price"),
+                })
+            else:
+                paper = self.paper[sec].snapshot(base["ltp"])
+                result["total_unrealized"] += float(paper["unrealized_pnl"])
+                result["total_realized"]   += float(paper["realized_pnl"])
+                result["symbols"].append({
+                    "name":             inst["name"],
+                    "contract_display": inst.get("contract_display", "-"),
+                    "buffer":           self.strategies[sec].buffer,
+                    "lot":              int(paper["lot_size"]),
+                    "prec":             prec,
+                    "ltp":              base["ltp"],
+                    "position":         paper["position_side"] or "-",
+                    "entry":            paper["entry_price"],
+                    "pending":          strat["pending_side"] or "-",
+                    "trigger":          strat["pending_trigger"],
+                    "unrealized":       float(paper["unrealized_pnl"]),
+                    "realized":         float(paper["realized_pnl"]),
+                    "ha_color":         ha_last["color"] if ha_last else "-",
+                    "ha_streak":        int(ha_last["streak"]) if ha_last else 0,
+                    "event":            paper.get("last_event","-") if paper.get("last_event","-") != "-" else strat["last_event"],
+                    "ha_history":       strat["ha_history"][-5:],
+                    "sl_price":         strat.get("sl_price"),
+                })
         return result
 
 
