@@ -488,7 +488,10 @@ class StrategyTab(ctk.CTkFrame):
         lines.append("─"*178)
         for s in snap["symbols"]:
             prec=s["prec"]; ltp=f"{s['ltp']:.{prec}f}" if s["ltp"] is not None else "-"
-            entry=f"{s['entry']:.{prec}f}" if s["entry"] is not None else "-"
+            _e=s["entry"]
+            if _e is None: entry="-"
+            elif isinstance(_e,str): entry=_e            # synthetic: "C123/P98"
+            else: entry=f"{_e:.{prec}f}"                  # MCX: numeric
             trig=f"{s['trigger']:.{prec}f}" if s["trigger"] is not None else "-"
             upnl=f"{s['unrealized']:>+.2f}"; rpnl=f"{s['realized']:>+.2f}"; contr=str(s.get("contract_display") or "-")[:22]
             lines.append(f"  {s['name'][:14]:<14}  {contr:<22}  {ltp:>10}  {s['position']:>6}  {entry:>10}  {s['pending']:>7}  {trig:>10}  {s['buffer']:>6.1f}  {s['lot']:>5}  {upnl:>12}  {rpnl:>12}  {str(s['event'])[:30]:<30}")
