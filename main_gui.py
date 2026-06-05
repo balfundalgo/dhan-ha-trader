@@ -359,7 +359,9 @@ class StrategyTab(ctk.CTkFrame):
     def _get_variation(self): return self._label_to_variation(self.var_dd.get())
     def _get_symbols_filter(self):
         sel=[s for s,v in self._sym_vars.items() if v.get()]
-        return None if len(sel)==len(ALL_SYMBOLS) else sel
+        if len(sel)==len(ALL_SYMBOLS): return None
+        if not sel: return ["__NONE__"]
+        return sel
     def _get_index_filter(self):
         sel=[s for s,v in self._idx_vars.items() if v.get()]
         return sel if sel else None
