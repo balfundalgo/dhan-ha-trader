@@ -373,7 +373,9 @@ def fetch_intraday_1m_history(access_token: str, inst: Dict[str, Any], days: int
     end_dt   = datetime.now().replace(second=0, microsecond=0)
     start_dt = end_dt - timedelta(days=days)
     exchange_segment = str(inst["exchange"])
-    instrument_type  = _instrument_for_segment(exchange_segment)
+    # Synthetic index instruments carry their own instrument_type (FUTIDX).
+    # Use it directly so HA candles build on FUTURES price, not options.
+    instrument_type  = inst.get("instrument_type") or _instrument_for_segment(exchange_segment)
     payload = {
         "securityId":      str(inst["security_id"]),
         "exchangeSegment": exchange_segment,
