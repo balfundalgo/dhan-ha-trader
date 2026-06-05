@@ -438,6 +438,10 @@ class TradingApp:
         if str(data.get("variation", "")).lower() != self.variation: return False
         restored = 0
         for sec, blob in data.get("symbols", {}).items():
+            # Only restore instruments that are part of THIS run's selection.
+            # Prevents a stale state file from bringing back unchecked symbols.
+            if sec not in self.sec_to_inst:
+                continue
             if sec in self.strategies:
                 self.strategies[sec].restore_state(blob.get("strategy", {}))
                 if self._is_synthetic(sec) and blob.get("synthetic"):
